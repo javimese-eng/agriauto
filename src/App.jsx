@@ -1,0 +1,1586 @@
+import { createClient } from '@supabase/supabase-js';
+import { useState, useEffect, useRef } from 'react';
+
+
+
+// ── Supabase ─────────────────────────────────────────────
+const SUPABASE_URL = 'https://conqquucmkqwhahnacjr.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNvbnFxdXVjbWtxd2hhaG5hY2pyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5NDg3MTUsImV4cCI6MjA5MzUyNDcxNX0.Y95-5sp-_gggovVut2PxIG9OqZWxU68e54pvr3SN_ds';
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
+  }
+});
+
+
+const LOGO_FULL = "/agriauto_logotipo.jpg";
+const LOGO_ICON = "/hojas.jpg";
+
+// ── Configuración de tableros ────────────────────────────
+const TABLEROS = {
+  clientes: {
+    id: 'clientes',
+    titulo: 'Pedidos Clientes',
+    subtitulo: 'Pedidos que tenemos que servir',
+    icon: '📦',
+    color: '#3a9e3f',
+    columnas: {
+      pedidos:  { header:'#3a9e3f', bg:'#e8f5e9', label:'Pedidos' },
+      reparto:  { header:'#c9960d', bg:'#faf0d0', label:'En reparto' },
+      servidos: { header:'#b03020', bg:'#fde8e8', label:'Servidos' },
+    },
+    colKeys: ['pedidos','reparto','servidos'],
+  },
+  proveedores: {
+    id: 'proveedores',
+    titulo: 'Pedidos Proveedores',
+    subtitulo: 'Pedidos que nos tienen que servir',
+    icon: '🚛',
+    color: '#2e7d4f',
+    columnas: {
+      pedidos:  { header:'#2e7d4f', bg:'#d6f0e0', label:'Pedido' },
+      servidos: { header:'#b03020', bg:'#fde8e8', label:'Recibido' },
+    },
+    colKeys: ['pedidos','servidos'],
+  },
+};
+
+// Usuarios cargados dinámicamente desde Supabase
+let EQUIPO_DINAMICO = []; // se rellena al cargar
+
+const URGENCIAS = [
+  { id:'urgente',      label:'Urgente',         color:'#c0392b', bg:'#fdecea', dot:'#e53935' },
+  { id:'hoy_manana',   label:'Hoy o mañana',    color:'#d35400', bg:'#fef3ea', dot:'#f57c00' },
+  { id:'proximos_7',   label:'Próximos 7 días', color:'#b7860b', bg:'#fefaea', dot:'#f9a825' },
+  { id:'cuando_pueda', label:'Cuando se pueda', color:'#2e7d32', bg:'#edf7ed', dot:'#43a047' },
+  { id:'facturado',    label:'Ya facturado',     color:'#1565c0', bg:'#e8f0fe', dot:'#1e88e5' },
+];
+function getUrgencia(id) { return URGENCIAS.find(u=>u.id===id) || URGENCIAS[2]; }
+const AV_PALETTE = [
+  {bg:'#E6F1FB',color:'#0C447C'},{bg:'#EAF3DE',color:'#27500A'},
+  {bg:'#FAEEDA',color:'#633806'},{bg:'#EEEDFE',color:'#3C3489'},
+  {bg:'#FAECE7',color:'#712B13'},{bg:'#E1F5EE',color:'#085041'},
+];
+
+
+// ── Helpers de notificaciones ────────────────────────────
+async function crearNotificacion(usuarioId, tipo, texto, pedidoId) {
+  await sb.from('notificaciones').insert({
+    usuario_id: usuarioId, tipo, texto, pedido_id: pedidoId
+  });
+}
+
+async function notificarResponsables(pedidoId, tipo, texto, autorId, pedidoCliente) {
+  // Get responsables of the pedido
+  const {data:resps} = await sb.from('responsables').select('nombre').eq('pedido_id', pedidoId);
+  if (!resps?.length) return;
+  const nombres = resps.map(r=>r.nombre);
+  // Get user profiles matching those names (excluding the author)
+  const {data:perfiles} = await sb.from('perfiles')
+    .select('id,nombre,notif_asignado,notif_comentario,notif_movimiento')
+    .in('nombre', nombres)
+    .eq('activo', true)
+    .neq('id', autorId || '00000000-0000-0000-0000-000000000000');
+  if (!perfiles?.length) return;
+  for (const p of perfiles) {
+    const should = (tipo==='asignado'&&p.notif_asignado!==false) ||
+                   (tipo==='comentario'&&p.notif_comentario!==false) ||
+                   (tipo==='movimiento'&&p.notif_movimiento!==false);
+    if (should) await crearNotificacion(p.id, tipo, texto, pedidoId);
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────
+function avColor(str='') {
+  const idx = ([...str].reduce((a,c)=>a+c.charCodeAt(0),0)) % AV_PALETTE.length;
+  return AV_PALETTE[idx];
+}
+function initials(name='') {
+  const parts = name.trim().split(' ');
+  return parts.length>=2 ? (parts[0][0]+parts[1][0]).toUpperCase() : name.slice(0,2).toUpperCase();
+}
+function nowStr() {
+  return new Date().toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
+}
+
+// ── API Supabase ─────────────────────────────────────────
+async function cargarPedidosPorTablero(tableroId) {
+  const { data: raw, error } = await sb
+    .from('pedidos')
+    .select(`*, productos(*), responsables(*), adjuntos(*), actividad(*)`)
+    .eq('tablero', tableroId)
+    .order('creado_en', { ascending: false });
+  if (error) { console.error(error); return null; }
+
+  const board = { pedidos:[], reparto:[], servidos:[], archivados:[] };
+  for (const p of raw) {
+    const card = {
+      id: p.id,
+      cliente: p.cliente,
+      ubicacion: p.ubicacion || '',
+      fecha: p.fecha || '',
+      urgencia: p.urgencia || 'cuando_pueda',
+      urgente: p.urgente || false,
+      creado_en: p.creado_en ? new Date(p.creado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '',
+      notas: p.notas || '',
+      productos: (p.productos||[]).map(x=>({id:x.id,nombre:x.nombre,cantidad:x.cantidad||''})),
+      responsables: (p.responsables||[]).map(x=>x.nombre),
+      adjuntos: (p.adjuntos||[]).map(x=>({id:x.id,nombre:x.nombre,size:x.size||'',url:x.url||''})),
+      actividad: (p.actividad||[])
+        .sort((a,b)=>new Date(b.creado_en)-new Date(a.creado_en))
+        .map(x=>({id:x.id,tipo:x.tipo,user:x.usuario,texto:x.texto,time:new Date(x.creado_en).toLocaleString('es-ES',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})})),
+    };
+    const col = p.columna || 'pedidos';
+    if (board[col] !== undefined) board[col].push(card);
+    else board.pedidos.push(card);
+  }
+  return board;
+}
+
+async function crearPedidoEnBD(fields, tableroId, perfil) {
+  const { data, error } = await sb.from('pedidos').insert({
+    cliente:fields.cliente, ubicacion:fields.ubicacion,
+    urgencia:fields.urgencia||'cuando_pueda',
+    urgente:fields.urgencia==='urgente'||fields.urgencia==='hoy_manana',
+    notas:fields.notas, columna:'pedidos', tablero:tableroId,
+  }).select().single();
+  if (error) throw error;
+  if (fields.productos?.length)
+    await sb.from('productos').insert(fields.productos.map(p=>({pedido_id:data.id,nombre:p.nombre,cantidad:p.cantidad})));
+  if (fields.responsables?.length)
+    await sb.from('responsables').insert(fields.responsables.map(r=>({pedido_id:data.id,nombre:r})));
+  await sb.from('actividad').insert({pedido_id:data.id,tipo:'mov',usuario:perfil?.nombre||perfil?.email||'Usuario',texto:'creó el pedido'});
+  // Notify assigned responsables
+  if (fields.responsables?.length) {
+    await notificarResponsables(data.id,'asignado',`${perfil?.nombre||'Alguien'} te ha asignado al pedido de ${fields.cliente}`,perfil?.id,fields.cliente);
+  }
+  return data.id;
+}
+
+async function moverPedido(id, toCol, label, perfil) {
+  await sb.from('pedidos').update({columna:toCol,actualizado_en:new Date()}).eq('id',id);
+  await sb.from('actividad').insert({pedido_id:id,tipo:'mov',usuario:perfil?.nombre||perfil?.email||'Usuario',texto:`movió a ${label}`});
+  const {data:p} = await sb.from('pedidos').select('cliente').eq('id',id).single();
+  await notificarResponsables(id,'movimiento',`${perfil?.nombre||'Alguien'} movió el pedido de ${p?.cliente||''} a ${label}`,perfil?.id,p?.cliente);
+}
+
+async function archivarPedido(id, perfil) {
+  await sb.from('pedidos').update({columna:'archivados',actualizado_en:new Date()}).eq('id',id);
+  await sb.from('actividad').insert({pedido_id:id,tipo:'mov',usuario:perfil?.nombre||perfil?.email||'Usuario',texto:'archivó el pedido'});
+}
+
+async function restaurarPedido(id, perfil) {
+  await sb.from('pedidos').update({columna:'pedidos',actualizado_en:new Date()}).eq('id',id);
+  await sb.from('actividad').insert({pedido_id:id,tipo:'mov',usuario:perfil?.nombre||perfil?.email||'Usuario',texto:'restauró el pedido a Pendiente'});
+}
+
+async function agregarComentario(pedidoId, texto, perfil) {
+  await sb.from('actividad').insert({pedido_id:pedidoId,tipo:'msg',usuario:perfil?.nombre||perfil?.email||'Usuario',texto});
+  // Get pedido cliente name for notification
+  const {data:p} = await sb.from('pedidos').select('cliente').eq('id',pedidoId).single();
+  await notificarResponsables(pedidoId,'comentario',`${perfil?.nombre||'Alguien'} comentó en el pedido de ${p?.cliente||''}`,perfil?.id,p?.cliente);
+}
+
+async function actualizarResponsables(pedidoId, responsables, perfil) {
+  await sb.from('responsables').delete().eq('pedido_id',pedidoId);
+  if (responsables.length)
+    await sb.from('responsables').insert(responsables.map(r=>({pedido_id:pedidoId,nombre:r})));
+  // Notify newly assigned
+  if (perfil && responsables.length) {
+    const {data:p} = await sb.from('pedidos').select('cliente').eq('id',pedidoId).single();
+    const {data:perfs} = await sb.from('perfiles').select('id,nombre,notif_asignado').in('nombre',responsables).eq('activo',true).neq('id',perfil.id||'x');
+    for(const u of perfs||[]) {
+      if(u.notif_asignado!==false) await crearNotificacion(u.id,'asignado',`${perfil.nombre} te ha asignado al pedido de ${p?.cliente||''}`,pedidoId);
+    }
+  }
+}
+
+async function subirAdjunto(pedidoId, file) {
+  const ext = file.name.split('.').pop();
+  const path = `${pedidoId}/${Date.now()}.${ext}`;
+  const { error: upErr } = await sb.storage.from('adjuntos').upload(path, file);
+  if (upErr) throw upErr;
+  const { data: urlData } = sb.storage.from('adjuntos').getPublicUrl(path);
+  const size = file.size > 1024*1024
+    ? `${(file.size/1024/1024).toFixed(1)} MB`
+    : `${Math.round(file.size/1024)} KB`;
+  const { error: dbErr } = await sb.from('adjuntos').insert({
+    pedido_id: pedidoId, nombre: file.name, size, url: urlData.publicUrl
+  });
+  if (dbErr) throw dbErr;
+}
+
+// ── Componentes base ─────────────────────────────────────
+function Avatar({name,size=28}) {
+  const {bg,color}=avColor(name);
+  return <div style={{width:size,height:size,borderRadius:'50%',background:bg,color,flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:size*0.35,fontWeight:600,fontFamily:'DM Mono,monospace',letterSpacing:'-0.02em'}}>{initials(name)}</div>;
+}
+function Label({children}) {
+  return <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:6}}>{children}</div>;
+}
+function Toast({msg}) {
+  return <div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:'#1a1a1a',color:'#fff',borderRadius:10,padding:'10px 18px',fontSize:13,fontWeight:500,boxShadow:'0 4px 20px rgba(0,0,0,0.3)',zIndex:500,whiteSpace:'nowrap',animation:'fadein .2s ease'}}>{msg}</div>;
+}
+function Spinner({msg='Cargando…'}) {
+  return (
+    <div style={{position:'fixed',inset:0,background:'#f0f0ec',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:16,zIndex:999}}>
+      <div style={{width:36,height:36,border:'3px solid #e0e0e0',borderTop:'3px solid #3a9e3f',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/>
+      <div style={{fontSize:14,color:'#888',fontWeight:500}}>{msg}</div>
+    </div>
+  );
+}
+
+// ── Pantalla de inicio ───────────────────────────────────
+function Inicio({onSelect,perfil,onLogout}) {
+  const [showAdmin,setShowAdmin]=useState(false);
+  return (
+    <>
+    <div style={{minHeight:'100vh',background:'#f5faf5',display:'flex',flexDirection:'column'}}>
+      <header style={{background:'#fff',borderBottom:'0.5px solid #e4e4e0',padding:'0 20px',height:60,display:'flex',alignItems:'center',boxShadow:'0 1px 8px rgba(0,0,0,0.06)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <img src={LOGO_FULL} style={{height:36,objectFit:'contain'}}/>
+        </div>
+        {perfil && <div style={{display:'flex',alignItems:'center',gap:8,marginLeft:'auto'}}>
+          <div style={{textAlign:'right',display:'none'}} className="header-title-sub">
+            <div style={{fontSize:13,fontWeight:600,color:'#1a1a1a'}}>{perfil.nombre}</div>
+            <div style={{fontSize:11,color:'#bbb'}}>{perfil.email}</div>
+          </div>
+          <Avatar name={perfil.nombre} size={32}/>
+          {perfil.es_admin && <button onClick={()=>setShowAdmin(true)} style={{background:'#e8f5e9',border:'0.5px solid #b5d9b6',borderRadius:8,padding:'6px 12px',fontSize:12,color:'#2e7d32',cursor:'pointer',fontWeight:500}}>👥 Usuarios</button>}
+          <button onClick={onLogout} style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 12px',fontSize:12,color:'#888',cursor:'pointer',fontWeight:500}}>Salir</button>
+        </div>}
+      </header>
+
+      <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:24,gap:16}}>
+        <div style={{textAlign:'center',marginBottom:16}}>
+          <div style={{fontSize:12,fontWeight:500,color:'#aaa',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:16}}>Aplicación de gestión de pedidos</div>
+          <img src={LOGO_FULL} style={{height:52,objectFit:'contain',marginBottom:20}}/>
+          <div style={{fontSize:22,fontWeight:700,color:'#1a1a1a',marginBottom:6}}>¿Qué tablero quieres ver?</div>
+          <div style={{fontSize:13,color:'#aaa'}}>Selecciona un proyecto para continuar</div>
+        </div>
+
+        {Object.values(TABLEROS).map(t=>(
+          <div key={t.id} onClick={()=>onSelect(t.id)}
+            style={{width:'100%',maxWidth:420,background:'#fff',borderRadius:14,padding:'20px 24px',cursor:'pointer',border:`1.5px solid transparent`,boxShadow:'0 2px 12px rgba(0,0,0,0.07)',transition:'all .18s',display:'flex',alignItems:'center',gap:16,animation:'fadein .3s ease'}}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=t.color;e.currentTarget.style.boxShadow=`0 4px 20px ${t.color}22`;e.currentTarget.style.transform='translateY(-2px)'}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor='transparent';e.currentTarget.style.boxShadow='0 2px 12px rgba(0,0,0,0.07)';e.currentTarget.style.transform='translateY(0)'}}
+          >
+            <div style={{width:48,height:48,borderRadius:12,background:t.color+'18',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24,flexShrink:0}}>{t.icon}</div>
+            <div>
+              <div style={{fontWeight:600,fontSize:15,color:'#1a1a1a',marginBottom:3}}>{t.titulo}</div>
+              <div style={{fontSize:12,color:'#aaa'}}>{t.subtitulo}</div>
+            </div>
+            <div style={{marginLeft:'auto',color:'#ccc',fontSize:18}}>›</div>
+          </div>
+        ))}
+      </div>
+    </div>
+    {showAdmin && perfil?.es_admin && <PanelAdmin perfil={perfil} onCerrar={()=>setShowAdmin(false)}/>}
+    </>
+  );
+}
+
+
+// ── Menú rápido de mover (móvil) ─────────────────────────
+function MoveMenu({card, colKey, colStyles, colKeys, position, onMove, onClose}) {
+  const destinos = colKeys.filter(k=>k!==colKey);
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{position:'fixed',inset:0,zIndex:150,background:'rgba(0,0,0,0.3)'}}/>
+      {/* Menu */}
+      <div style={{
+        position:'fixed',
+        top: Math.min(position.top, window.innerHeight-180),
+        left: Math.max(8, Math.min(position.left, window.innerWidth-220)),
+        zIndex:151,
+        background:'#fff',
+        borderRadius:12,
+        boxShadow:'0 8px 32px rgba(0,0,0,0.22)',
+        overflow:'hidden',
+        minWidth:200,
+        animation:'fadein .15s ease',
+      }}>
+        <div style={{padding:'10px 14px',background:'#f5f5f3',borderBottom:'0.5px solid #eee'}}>
+          <div style={{fontSize:11,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em'}}>Mover pedido</div>
+          <div style={{fontSize:13,fontWeight:600,color:'#1a1a1a',marginTop:2}}>{card.cliente}</div>
+        </div>
+        {destinos.map(dest=>{
+          const col = colStyles[dest];
+          return (
+            <button key={dest} onClick={()=>{onMove(card.id, colKey, dest); onClose();}}
+              style={{width:'100%',padding:'12px 16px',border:'none',borderBottom:'0.5px solid #f0f0f0',
+                background:'#fff',cursor:'pointer',display:'flex',alignItems:'center',gap:10,
+                fontSize:14,fontWeight:500,color:'#1a1a1a',textAlign:'left'}}
+              onMouseEnter={e=>e.currentTarget.style.background='#f5faf5'}
+              onMouseLeave={e=>e.currentTarget.style.background='#fff'}
+            >
+              <div style={{width:10,height:10,borderRadius:'50%',background:col.header,flexShrink:0}}/>
+              → {col.label}
+            </button>
+          );
+        })}
+        <button onClick={onClose}
+          style={{width:'100%',padding:'11px 16px',border:'none',background:'#fafafa',
+            cursor:'pointer',fontSize:13,color:'#aaa',fontWeight:500}}>
+          Cancelar
+        </button>
+      </div>
+    </>
+  );
+}
+
+// ── Tarjeta miniatura ────────────────────────────────────
+function Card({card,colKey,colStyles,onOpen,onDragStart,onDragEnd,onMoveMenu}) {
+  const isServido = colKey==='servidos';
+  const maxVisible = card.productos.length;
+  const extra = 0;
+  const longPressTimer = useRef(null);
+  const [pressing, setPressing] = useState(false);
+
+  function startLongPress(e) {
+    longPressTimer.current = setTimeout(()=>{
+      setPressing(false);
+      // Show move menu at touch position
+      const rect = e.currentTarget?.getBoundingClientRect?.() || {top:100,left:50};
+      onMoveMenu(card, colKey, {top: rect.top, left: rect.left});
+    }, 500);
+    setPressing(true);
+  }
+  function cancelLongPress() {
+    clearTimeout(longPressTimer.current);
+    setPressing(false);
+  }
+  return (
+    <div draggable
+      onDragStart={e=>{e.dataTransfer.effectAllowed='move';onDragStart(card.id,colKey);e.currentTarget.classList.add('card-drag');}}
+      onDragEnd={e=>{e.currentTarget.classList.remove('card-drag');onDragEnd();}}
+      onClick={()=>onOpen(card,colKey)}
+      style={{background:'#fff',borderRadius:10,padding:'10px 12px',marginBottom:7,cursor:'grab',border:`0.5px solid ${pressing?'#3a9e3f':'rgba(0,0,0,0.09)'}`,transition:'border-color .15s,box-shadow .15s',boxShadow:pressing?'0 0 0 3px rgba(58,158,63,0.15)':'none'}}
+      onMouseEnter={e=>{e.currentTarget.style.borderColor='rgba(0,0,0,0.18)';e.currentTarget.style.boxShadow='0 2px 10px rgba(0,0,0,0.07)'}}
+      onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(0,0,0,0.09)';e.currentTarget.style.boxShadow='none'}}
+      onTouchStart={startLongPress}
+      onTouchEnd={cancelLongPress}
+      onTouchMove={cancelLongPress}
+    >
+      {isServido && <div style={{display:'inline-flex',alignItems:'center',gap:4,background:'#EAF3DE',color:'#27500A',fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:20,marginBottom:5}}><div style={{width:5,height:5,borderRadius:'50%',background:'#639922'}}/> Terminada</div>}
+      <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:6,marginBottom:1}}>
+        <div style={{fontSize:13,fontWeight:600,color:isServido?'#b0b0b0':'#1a1a1a',textDecoration:isServido?'line-through':'none',lineHeight:1.3,flex:1}}>{card.cliente}</div>
+        {card.creado_en && <div style={{fontSize:9,color:'#bbb',fontFamily:'DM Mono,monospace',whiteSpace:'nowrap',flexShrink:0,marginTop:2}}>{card.creado_en}</div>}
+      </div>
+      {card.ubicacion && <div style={{fontSize:11,color:'#aaa',marginBottom:5}}>{card.ubicacion}</div>}
+      <div style={{fontSize:11,color:'#666',lineHeight:1.65}}>
+        {card.productos.slice(0,maxVisible).map((p,i)=><div key={i}>{p.cantidad} {p.nombre}</div>)}
+
+      </div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:8}}>
+        <div style={{display:'flex',alignItems:'center',gap:7}}>
+          {card.urgencia && !isServido && (()=>{ const u=getUrgencia(card.urgencia); return <span style={{fontSize:10,fontWeight:600,color:u.color,background:u.bg,padding:'2px 7px',borderRadius:20,display:'inline-flex',alignItems:'center',gap:3}}><span style={{width:5,height:5,borderRadius:'50%',background:u.dot,display:'inline-block'}}></span>{u.label}</span>; })()}
+          {card.adjuntos.length>0 && <span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,color:'#aaa'}}>
+            <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M10.5 5.5L5.5 10.5C4.4 11.6 2.6 11.6 1.5 10.5C0.4 9.4 0.4 7.6 1.5 6.5L6.5 1.5C7.2 0.8 8.3 0.8 9 1.5C9.7 2.2 9.7 3.3 9 4L4.5 8.5C4.2 8.8 3.7 8.8 3.5 8.5C3.2 8.2 3.2 7.8 3.5 7.5L7.5 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+            {card.adjuntos.length}
+          </span>}
+        </div>
+        <div style={{display:'flex'}}>
+          {card.responsables.slice(0,3).map((r,i)=><div key={i} style={{marginLeft:i>0?-6:0,zIndex:i}}><Avatar name={r} size={26}/></div>)}
+          {card.responsables.length>3 && <div style={{marginLeft:-6,width:26,height:26,borderRadius:'50%',background:'#eee',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'#888',fontWeight:600}}>+{card.responsables.length-3}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Modal detalle (tablero + archivo) ────────────────────
+function ModalDetalle({card,colKey,colStyles,colKeys,onClose,onMove,onComment,onArchive,onRestore,onUpdateResponsables,onAdjuntarArchivo,onEditarPedido,perfil,usuarios=[],grupos=[],esArchivado=false,headerColor='#3a9e3f'}) {
+  const [comment,setComment]=useState('');
+  const [showRespMenu,setShowRespMenu]=useState(false);
+  const [respInput,setRespInput]=useState('');
+  const [saving,setSaving]=useState(false);
+  const [uploading,setUploading]=useState(false);
+  const [editando,setEditando]=useState(false);
+  const [editForm,setEditForm]=useState({
+    cliente:card.cliente,ubicacion:card.ubicacion,fecha:card.fecha,urgencia:card.urgencia||'cuando_pueda',notas:card.notas,
+    responsables:[...card.responsables],
+    productos:card.productos.map(p=>`${p.cantidad} ${p.nombre}`.trim()).join('\n'),
+    urgente:card.urgente,
+  });
+  const fileInputRef=useRef();
+  const col=colStyles?.[colKey]||{header:headerColor,label:'Archivado'};
+  const destinos=colKeys?colKeys.filter(k=>k!==colKey):[];
+
+  async function submitComment(){
+    if(!comment.trim())return; setSaving(true);
+    await onComment(card.id,comment.trim());
+    setComment(''); setSaving(false);
+  }
+  async function addResp(name){
+    const n=name.trim(); if(!n) return;
+    const expandidos = expandirGrupoOPersona(n);
+    const actuales = card.responsables;
+    const nuevos = expandidos.filter(x=>!actuales.includes(x));
+    if(!nuevos.length) { setRespInput(''); setShowRespMenu(false); return; }
+    const updated=[...actuales,...nuevos];
+    await onUpdateResponsables(card.id,updated);
+    setRespInput(''); setShowRespMenu(false);
+  }
+  async function removeResp(name){
+    const updated=card.responsables.filter(r=>r!==name);
+    await onUpdateResponsables(card.id,updated);
+  }
+  async function handleFileChange(e){
+    const file=e.target.files?.[0]; if(!file)return;
+    setUploading(true);
+    try{await onAdjuntarArchivo(card.id,file);}
+    catch{alert('Error al subir el archivo.');}
+    setUploading(false); e.target.value='';
+  }
+  async function guardarEdicion(){
+    setSaving(true);
+    const prods=editForm.productos.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{
+      const m=l.match(/^([0-9.,]+\s*\S+)\s+(.+)$/);
+      return m?{cantidad:m[1],nombre:m[2]}:{cantidad:'',nombre:l};
+    });
+    await onEditarPedido(card.id,{
+      cliente:editForm.cliente.trim(),ubicacion:editForm.ubicacion.trim(),
+      urgencia:editForm.urgencia||'cuando_pueda',
+      notas:editForm.notas.trim(),
+      urgente:editForm.urgencia==='urgente'||editForm.urgencia==='hoy_manana',
+      responsables:editForm.responsables,
+      productos:prods.length?prods:[{nombre:'Sin especificar',cantidad:''}],
+    });
+    setEditando(false); setSaving(false);
+  }
+  function cancelarEdicion(){
+    setEditando(false);
+    setEditForm({cliente:card.cliente,ubicacion:card.ubicacion,fecha:card.fecha,urgencia:card.urgencia||'cuando_pueda',notas:card.notas,responsables:[...card.responsables],productos:card.productos.map(p=>`${p.cantidad} ${p.nombre}`.trim()).join('\n')});
+  }
+  const listaUsuarios = usuarios.length?usuarios:EQUIPO_DINAMICO;
+  const listaGrupos = grupos.map(g=>g.nombre);
+  const suggestions = [
+    ...listaGrupos.filter(g=>g.toLowerCase().includes(respInput.toLowerCase())),
+    ...listaUsuarios.filter(u=>!card.responsables.includes(u)&&u.toLowerCase().includes(respInput.toLowerCase())),
+  ];
+  function expandirGrupoOPersona(nombre) {
+    const grupo = grupos.find(g=>g.nombre===nombre);
+    if(grupo) {
+      // Expand group to all its members
+      const miembros = (grupo.miembros||[]).map(m=>m.perfiles?.nombre).filter(Boolean);
+      const nuevos = miembros.filter(m=>!card.responsables.includes(m));
+      return nuevos;
+    }
+    return [nombre];
+  }
+  const inp={width:'100%',border:'0.5px solid #ddd',borderRadius:8,padding:'7px 10px',fontSize:13,color:'#1a1a1a',background:'#fff',outline:'none',fontFamily:'DM Sans,sans-serif'};
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-end',justifyContent:'center',padding:0,zIndex:100,overflowY:'auto'}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
+      <div style={{background:'#fff',borderRadius:'14px 14px 0 0',width:'100%',maxWidth:'100%',overflow:'hidden',boxShadow:'0 -4px 32px rgba(0,0,0,0.18)',maxHeight:'92vh',overflowY:'auto'}}>
+
+        <div style={{background:col.header,padding:'12px 16px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{fontSize:12,color:'rgba(255,255,255,0.75)',fontWeight:500}}>{editando?'Editando…':col.label}</span>
+          <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',justifyContent:'flex-end'}}>
+            {esArchivado?(
+              <button onClick={()=>onRestore(card.id)} style={{background:'rgba(255,255,255,0.18)',color:'#fff',border:'1px solid rgba(255,255,255,0.35)',borderRadius:7,padding:'4px 11px',fontSize:11,fontWeight:600,cursor:'pointer'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.3)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.18)'}>↩ Restaurar</button>
+            ):(<>
+              {!editando&&destinos.map(dest=>(
+                <button key={dest} onClick={()=>onMove(card.id,colKey,dest)} style={{background:'rgba(255,255,255,0.18)',color:'#fff',border:'1px solid rgba(255,255,255,0.35)',borderRadius:7,padding:'4px 11px',fontSize:11,fontWeight:600,cursor:'pointer'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.3)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.18)'}>→ {colStyles[dest].label}</button>
+              ))}
+              {!editando&&colKey==='servidos'&&<button onClick={()=>onArchive(card.id)} style={{background:'rgba(255,255,255,0.18)',color:'#fff',border:'1px solid rgba(255,255,255,0.35)',borderRadius:7,padding:'4px 11px',fontSize:11,fontWeight:600,cursor:'pointer'}}>📦 Archivar</button>}
+              {!editando&&<button onClick={()=>setEditando(true)} style={{background:'rgba(255,255,255,0.18)',color:'#fff',border:'1px solid rgba(255,255,255,0.35)',borderRadius:7,padding:'4px 11px',fontSize:11,fontWeight:600,cursor:'pointer'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.3)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.18)'}>✏️ Editar</button>}
+            </>)}
+            <button onClick={onClose} style={{background:'none',border:'none',color:'rgba(255,255,255,0.8)',fontSize:20,cursor:'pointer',lineHeight:1,padding:'0 2px'}}>✕</button>
+          </div>
+        </div>
+
+        <div style={{padding:'18px 20px',overflowY:'auto',maxHeight:'80vh'}}>
+          {esArchivado&&<div style={{display:'inline-flex',alignItems:'center',gap:5,background:'#EAF3DE',color:'#27500A',fontSize:11,fontWeight:600,padding:'4px 10px',borderRadius:20,marginBottom:12}}><div style={{width:6,height:6,borderRadius:'50%',background:'#639922'}}/> Archivado</div>}
+
+          {editando?(
+            /* ── MODO EDICIÓN ── */
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              <div style={{background:'#fffbf0',border:'0.5px solid #f0e8c8',borderRadius:9,padding:'8px 12px',fontSize:12,color:'#7a6020'}}>✏️ Modo edición — los cambios quedarán registrados en el historial</div>
+              {[{l:'Cliente',f:'cliente'},{l:'Ubicación / Finca',f:'ubicacion'}].map(({l,f})=>(
+                <div key={f}><Label>{l}</Label><input value={editForm[f]} onChange={e=>setEditForm(p=>({...p,[f]:e.target.value}))} style={inp}/></div>
+              ))}
+              <div><Label>Urgencia</Label>
+                <select value={editForm.urgencia||'cuando_pueda'} onChange={e=>setEditForm(p=>({...p,urgencia:e.target.value,urgente:e.target.value==='urgente'||e.target.value==='hoy_manana'}))} style={{...inp,cursor:'pointer'}}>
+                  {URGENCIAS.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label>Responsables</Label>
+                <div style={{display:'flex',flexWrap:'wrap',gap:5,marginBottom:7}}>
+                  {editForm.responsables.map(r=>(
+                    <div key={r} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#f0f0ee',borderRadius:20,padding:'3px 8px 3px 4px',fontSize:12}}>
+                      <Avatar name={r} size={18}/><span style={{fontWeight:500,color:'#333'}}>{r}</span>
+                      <button type="button" onClick={()=>setEditForm(p=>({...p,responsables:p.responsables.filter(x=>x!==r)}))} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:14,lineHeight:1}}>×</button>
+                    </div>
+                  ))}
+                </div>
+                <div style={{display:'flex',gap:6}}>
+                  <select onChange={e=>{ const v=e.target.value; if(v&&!editForm.responsables.includes(v)) setEditForm(p=>({...p,responsables:[...p.responsables,v]})); e.target.value=''; }}
+                    style={{...inp,cursor:'pointer'}}>
+                    <option value="">+ Añadir responsable…</option>
+                    {(usuarios.length?usuarios:EQUIPO_DINAMICO).filter(u=>!editForm.responsables.includes(u)).map(u=><option key={u} value={u}>{u}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div><Label>Productos (uno por línea)</Label><textarea value={editForm.productos} onChange={e=>setEditForm(p=>({...p,productos:e.target.value}))} rows={5} style={{...inp,resize:'vertical'}}/></div>
+              <div><Label>Notas</Label><textarea value={editForm.notas} onChange={e=>setEditForm(p=>({...p,notas:e.target.value}))} rows={2} style={{...inp,resize:'vertical'}}/></div>
+              
+              <div style={{display:'flex',gap:8,marginTop:4}}>
+                <button onClick={guardarEdicion} disabled={saving} style={{flex:1,background:col.header,color:'#fff',border:'none',borderRadius:8,padding:'10px',fontSize:13,fontWeight:600,cursor:'pointer',opacity:saving?.6:1}}>{saving?'Guardando…':'Guardar cambios'}</button>
+                <button onClick={cancelarEdicion} style={{background:'#f0f0ec',color:'#666',border:'0.5px solid #ddd',borderRadius:8,padding:'10px 16px',fontSize:13,fontWeight:500,cursor:'pointer'}}>Cancelar</button>
+              </div>
+            </div>
+          ):(
+          /* ── MODO VISTA ── */
+          <>
+            <div style={{fontSize:18,fontWeight:600,color:esArchivado?'#888':'#1a1a1a',textDecoration:esArchivado?'line-through':'none',marginBottom:2,lineHeight:1.3}}>{card.cliente}</div>
+            {card.ubicacion&&<div style={{fontSize:12,color:'#999',marginBottom:14}}>{card.ubicacion}</div>}
+            <div style={{display:'flex',gap:8,marginBottom:16}}>
+              <div style={{flex:1,background:'#f6f6f4',borderRadius:9,padding:'8px 10px'}}>
+                <div style={{fontSize:10,color:'#aaa',marginBottom:3,textTransform:'uppercase',letterSpacing:'.05em'}}>Urgencia</div>
+                {(()=>{ const u=getUrgencia(card.urgencia); return <div style={{fontSize:12,fontWeight:600,color:u.color,display:'flex',alignItems:'center',gap:5}}><span style={{width:8,height:8,borderRadius:'50%',background:u.dot,display:'inline-block'}}></span>{u.label}</div>; })()}
+              </div>
+              <div style={{flex:1,background:'#f6f6f4',borderRadius:9,padding:'8px 10px'}}>
+                <div style={{fontSize:10,color:'#aaa',marginBottom:3,textTransform:'uppercase',letterSpacing:'.05em'}}>Estado</div>
+                <div style={{fontSize:12,fontWeight:500,color:'#1a1a1a'}}>{col.label}</div>
+              </div>
+            </div>
+
+            {/* Responsables */}
+            <div style={{marginBottom:14}}>
+              <Label>Responsables ({card.responsables.length})</Label>
+              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}}>
+                {card.responsables.map(r=>(
+                  <div key={r} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#f0f0ee',borderRadius:20,padding:'4px 10px 4px 5px',fontSize:12}}>
+                    <Avatar name={r} size={20}/><span style={{fontWeight:500,color:'#333'}}>{r}</span>
+                    {!esArchivado&&<button onClick={()=>removeResp(r)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:14,lineHeight:1}}>×</button>}
+                  </div>
+                ))}
+              </div>
+              {!esArchivado&&(
+                <div style={{position:'relative'}}>
+                  <div style={{display:'flex',gap:6}}>
+                    <input value={respInput} onChange={e=>{setRespInput(e.target.value);setShowRespMenu(true)}} onFocus={()=>setShowRespMenu(true)} onKeyDown={e=>{if(e.key==='Enter')addResp(respInput)}} placeholder="Añadir responsable…" style={{flex:1,border:'0.5px solid #ddd',borderRadius:7,padding:'6px 10px',fontSize:12,background:'#f6f6f4',outline:'none',color:'#1a1a1a'}}/>
+                    <button onClick={()=>addResp(respInput)} style={{background:col.header,color:'#fff',border:'none',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontWeight:600}}>+</button>
+                  </div>
+                  {showRespMenu&&respInput&&suggestions.length>0&&(
+                    <div style={{position:'absolute',top:'100%',left:0,right:0,background:'#fff',border:'0.5px solid #ddd',borderRadius:8,boxShadow:'0 4px 16px rgba(0,0,0,0.1)',zIndex:10,overflow:'hidden',marginTop:2}}>
+                      {suggestions.map(s=><div key={s} onClick={()=>addResp(s)} style={{padding:'8px 12px',fontSize:12,cursor:'pointer',display:'flex',alignItems:'center',gap:8,color:'#1a1a1a'}} onMouseEnter={e=>e.currentTarget.style.background='#f5f5f3'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}><Avatar name={s} size={22}/>{s}</div>)}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Productos */}
+            <div style={{marginBottom:14}}>
+              <Label>Productos ({card.productos.length})</Label>
+              <div style={{borderRadius:9,overflow:'hidden',border:'0.5px solid #eee'}}>
+                {card.productos.map((p,i)=>(
+                  <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'7px 11px',borderBottom:i<card.productos.length-1?'0.5px solid #eee':'none',fontSize:12,color:'#1a1a1a',background:i%2===0?'#fff':'#fafaf8'}}>
+                    <span>{p.nombre}</span><span style={{fontWeight:600,color:'#666',fontSize:11,fontFamily:'DM Mono,monospace'}}>{p.cantidad}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Notas */}
+            {card.notas&&<div style={{marginBottom:14}}><Label>Notas</Label><div style={{background:'#fffbf0',border:'0.5px solid #f0e8c8',borderRadius:9,padding:'10px 12px',fontSize:12,color:'#555',lineHeight:1.6}}>{card.notas}</div></div>}
+
+            {/* Adjuntos */}
+            <div style={{marginBottom:14}}>
+              <Label>Archivos adjuntos ({card.adjuntos.length})</Label>
+              {card.adjuntos.length===0&&<div style={{fontSize:12,color:'#ccc',fontStyle:'italic',marginBottom:6}}>Sin archivos adjuntos</div>}
+              <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                {card.adjuntos.map((a,i)=>(
+                  <a key={i} href={a.url} target="_blank" rel="noopener noreferrer"
+                    style={{display:'flex',alignItems:'center',gap:9,background:'#f6f6f4',borderRadius:9,padding:'8px 11px',textDecoration:'none',cursor:'pointer',transition:'background .15s'}}
+                    onMouseEnter={e=>e.currentTarget.style.background='#efefec'}
+                    onMouseLeave={e=>e.currentTarget.style.background='#f6f6f4'}
+                  >
+                    <div style={{width:30,height:30,borderRadius:7,background:i%2===0?'#E6F1FB':'#EAF3DE',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="1" width="10" height="13" rx="1.5" stroke={i%2===0?'#185FA5':'#3B6D11'} strokeWidth="1.2"/><path d="M5 5h6M5 8h6M5 11h3" stroke={i%2===0?'#185FA5':'#3B6D11'} strokeWidth="1" strokeLinecap="round"/></svg>
+                    </div>
+                    <span style={{flex:1,fontSize:12,color:'#1a1a1a',fontWeight:500}}>{a.nombre}</span>
+                    <span style={{fontSize:10,color:'#bbb',fontFamily:'DM Mono,monospace'}}>{a.size}</span>
+                    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{flexShrink:0,color:'#aaa'}}><path d="M8 2v8M4 7l4 4 4-4M2 13h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                  </a>
+                ))}
+              </div>
+              {!esArchivado&&(<>
+                <input ref={fileInputRef} type="file" style={{display:'none'}} onChange={handleFileChange}/>
+                <button onClick={()=>fileInputRef.current?.click()} disabled={uploading}
+                  style={{display:'inline-flex',alignItems:'center',gap:5,background:'none',border:'0.5px dashed #ccc',borderRadius:8,padding:'7px 13px',fontSize:12,color:'#999',cursor:'pointer',marginTop:7,opacity:uploading?.6:1}}
+                  onMouseEnter={e=>{if(!uploading){e.currentTarget.style.borderColor=col.header;e.currentTarget.style.color=col.header}}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor='#ccc';e.currentTarget.style.color='#999'}}
+                >{uploading?'Subiendo…':'+ Adjuntar archivo'}</button>
+              </>)}
+            </div>
+          </>
+          )}
+
+          {/* Actividad — siempre visible */}
+          <div style={{borderTop:'0.5px solid #eee',paddingTop:14,marginTop:editando?14:0}}>
+            <Label>Actividad</Label>
+            {card.actividad.length===0&&<div style={{fontSize:12,color:'#ccc',fontStyle:'italic',marginBottom:10}}>Sin actividad registrada</div>}
+            {card.actividad.map((a,i)=>{
+              const esC=a.tipo==='msg';
+              return(
+                <div key={i} style={{display:'flex',gap:9,marginBottom:8,alignItems:'flex-start',...(esC?{background:'#f0f7ee',border:'0.5px solid #c0dfc0',borderRadius:9,padding:'8px 10px'}:{padding:'2px 0',opacity:0.7})}}>
+                  <Avatar name={a.user} size={esC?26:20}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:esC?12:11,color:esC?'#1a1a1a':'#888',lineHeight:1.55}}>
+                      <strong style={{color:esC?'#1a5c1e':'#555',fontWeight:600}}>{a.user}</strong>{esC?': ':' '}
+                      <span style={{fontWeight:esC?500:400}}>{a.texto}</span>
+                    </div>
+                    <div style={{fontSize:10,color:'#bbb',marginTop:2}}>{a.time}</div>
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{display:'flex',gap:8,marginTop:12,alignItems:'center'}}>
+              <Avatar name={perfil?.nombre||card.responsables[0]||'?'} size={30}/>
+              <input value={comment} onChange={e=>setComment(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')submitComment()}} placeholder="Añadir comentario… (Enter para enviar)" style={{flex:1,border:'0.5px solid #ddd',borderRadius:8,padding:'8px 11px',fontSize:12,color:'#1a1a1a',background:'#f6f6f4',outline:'none'}}/>
+              <button onClick={submitComment} disabled={saving} style={{background:col.header,color:'#fff',border:'none',borderRadius:8,padding:'8px 14px',fontSize:12,fontWeight:600,cursor:'pointer',flexShrink:0,opacity:saving?.6:1}}>{saving?'…':'Enviar'}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+// ── Modal nuevo pedido ───────────────────────────────────
+function ModalNuevo({onClose,onCreate,headerColor='#3a9e3f',usuarios=[],grupos=[]}) {
+  const [form,setForm]=useState({cliente:'',ubicacion:'',productos:'',urgencia:'cuando_pueda',responsables:[],notas:''});
+  const [respInput,setRespInput]=useState('');
+  const [showMenu,setShowMenu]=useState(false);
+  const [saving,setSaving]=useState(false);
+  const set=(f,v)=>setForm(p=>({...p,[f]:v}));
+  const listaUsuariosN = usuarios.length?usuarios:EQUIPO_DINAMICO;
+  const suggestions = [
+    ...grupos.map(g=>g.nombre).filter(g=>g.toLowerCase().includes(respInput.toLowerCase())),
+    ...listaUsuariosN.filter(u=>!form.responsables.includes(u)&&u.toLowerCase().includes(respInput.toLowerCase())),
+  ];
+  function expandirGrupo(nombre) {
+    const grupo = grupos.find(g=>g.nombre===nombre);
+    if(grupo) return (grupo.miembros||[]).map(m=>m.perfiles?.nombre).filter(Boolean);
+    return [nombre];
+  }
+  function addResp(n){
+    const t=n.trim(); if(!t) return;
+    const expandidos=expandirGrupo(t);
+    const nuevos=expandidos.filter(x=>!form.responsables.includes(x));
+    if(nuevos.length) set('responsables',[...form.responsables,...nuevos]);
+    setRespInput(''); setShowMenu(false);
+  }
+  function removeResp(n){set('responsables',form.responsables.filter(r=>r!==n));}
+  async function handleCreate(){
+    if(!form.cliente.trim()){alert('El nombre del cliente es obligatorio.');return;}
+    setSaving(true);
+    const prods=form.productos.split('\n').map(l=>l.trim()).filter(Boolean).map(l=>{const m=l.match(/^([0-9.,]+\s*\S+)\s+(.+)$/);return m?{cantidad:m[1],nombre:m[2]}:{cantidad:'',nombre:l};});
+    await onCreate({cliente:form.cliente.trim(),ubicacion:form.ubicacion.trim(),productos:prods.length?prods:[{nombre:'Sin especificar',cantidad:''}],urgencia:form.urgencia||'cuando_pueda',urgente:form.urgencia==='urgente'||form.urgencia==='hoy_manana',responsables:form.responsables.length?form.responsables:['Sin asignar'],notas:form.notas.trim()});
+    setSaving(false);
+  }
+  const inp={width:'100%',border:'0.5px solid #ddd',borderRadius:8,padding:'8px 11px',fontSize:13,color:'#1a1a1a',background:'#f6f6f4',outline:'none',fontFamily:'DM Sans,sans-serif'};
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-end',justifyContent:'center',zIndex:200,padding:'0',overflowY:'auto'}} onClick={e=>{if(e.target===e.currentTarget)onClose()}}>
+      <div style={{background:'#fff',borderRadius:'14px 14px 0 0',width:'100%',maxWidth:'100%',overflow:'hidden',boxShadow:'0 -4px 32px rgba(0,0,0,0.18)'}}>
+        <div style={{background:headerColor,padding:'12px 16px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{fontSize:14,fontWeight:600,color:'#fff'}}>Nuevo pedido</span>
+          <button onClick={onClose} style={{background:'none',border:'none',color:'rgba(255,255,255,0.8)',fontSize:20,cursor:'pointer'}}>✕</button>
+        </div>
+        <div style={{padding:18,display:'flex',flexDirection:'column',gap:12,overflowY:'auto',maxHeight:'80vh'}}>
+          {[{l:'Cliente *',f:'cliente',p:'Nombre del cliente / proveedor'},{l:'Ubicación / Referencia',f:'ubicacion',p:'Finca, almacén o referencia'}].map(({l,f,p})=>(
+            <div key={f}><div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>{l}</div><input value={form[f]} onChange={e=>set(f,e.target.value)} placeholder={p} style={inp}/></div>
+          ))}
+          <div>
+            <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Urgencia</div>
+            <select value={form.urgencia||'cuando_pueda'} onChange={e=>set('urgencia',e.target.value)} style={{...inp,cursor:'pointer'}}>
+              {URGENCIAS.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Responsables</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:5,marginBottom:7}}>
+              {form.responsables.map(r=>(
+                <div key={r} style={{display:'inline-flex',alignItems:'center',gap:4,background:'#f0f0ee',borderRadius:20,padding:'3px 8px 3px 4px',fontSize:12}}>
+                  <Avatar name={r} size={18}/><span style={{fontWeight:500,color:'#333'}}>{r}</span>
+                  <button onClick={()=>removeResp(r)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:14,lineHeight:1}}>×</button>
+                </div>
+              ))}
+            </div>
+            <div style={{position:'relative'}}>
+              <div style={{display:'flex',gap:6}}>
+                <input value={respInput} onChange={e=>{setRespInput(e.target.value);setShowMenu(true)}} onFocus={()=>setShowMenu(true)} onKeyDown={e=>{if(e.key==='Enter')addResp(respInput)}} placeholder="Buscar o escribir nombre…" style={{...inp,flex:1}}/>
+                <button onClick={()=>addResp(respInput)} style={{background:headerColor,color:'#fff',border:'none',borderRadius:7,padding:'6px 12px',fontSize:12,cursor:'pointer',fontWeight:600}}>+</button>
+              </div>
+              {showMenu&&respInput&&suggestions.length>0&&(
+                <div style={{position:'absolute',top:'100%',left:0,right:0,background:'#fff',border:'0.5px solid #ddd',borderRadius:8,boxShadow:'0 4px 16px rgba(0,0,0,0.1)',zIndex:10,overflow:'hidden',marginTop:2}}>
+                  {suggestions.map(s=><div key={s} onClick={()=>addResp(s)} style={{padding:'8px 12px',fontSize:12,cursor:'pointer',display:'flex',alignItems:'center',gap:8,color:'#1a1a1a'}} onMouseEnter={e=>e.currentTarget.style.background='#f5f5f3'} onMouseLeave={e=>e.currentTarget.style.background='#fff'}><Avatar name={s} size={22}/>{s}</div>)}
+                </div>
+              )}
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Productos (uno por línea)</div>
+            <textarea value={form.productos} onChange={e=>set('productos',e.target.value)} placeholder={"4 palets Sulfato Potásico\n1000 kg Nitrato"} rows={4} style={{...inp,resize:'vertical'}}/>
+            <div style={{fontSize:10,color:'#bbb',marginTop:3}}>Formato: cantidad + espacio + nombre</div>
+          </div>
+          <div>
+            <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Notas</div>
+            <textarea value={form.notas} onChange={e=>set('notas',e.target.value)} placeholder="Instrucciones especiales…" rows={2} style={{...inp,resize:'vertical'}}/>
+          </div>
+          <button onClick={handleCreate} disabled={saving} style={{background:headerColor,color:'#fff',border:'none',borderRadius:9,padding:'11px',fontSize:14,fontWeight:600,cursor:'pointer',marginTop:4,opacity:saving?.6:1}}>
+            {saving?'Guardando…':'Crear pedido'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Vista Archivo ────────────────────────────────────────
+function Archivo({archivados,onBack,onOpenCard,headerColor='#3a9e3f'}) {
+  const [query,setQuery]=useState('');
+  // Multi-term search: split by space, all terms must match
+  const terms = query.toLowerCase().split(' ').map(t=>t.trim()).filter(Boolean);
+  const filtrados = archivados.filter(c=>{
+    if(!terms.length) return true;
+    const haystack = [
+      c.cliente, c.ubicacion||'', c.fecha||'', c.creado_en||'',
+      ...c.productos.map(p=>p.nombre+' '+p.cantidad),
+      ...c.responsables,
+      c.notas||''
+    ].join(' ').toLowerCase();
+    return terms.every(t=>haystack.includes(t));
+  });
+  return (
+    <div style={{minHeight:'100vh',background:'#f0f0ec'}}>
+      <header style={{background:'#fff',borderBottom:'0.5px solid #e4e4e0',padding:'0 16px',height:54,display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50,boxShadow:'0 1px 8px rgba(0,0,0,0.06)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <button onClick={onBack} style={{background:'#f0f0ec',border:'none',borderRadius:7,padding:'5px 10px',fontSize:12,cursor:'pointer',color:'#555',fontWeight:500}}>← Volver</button>
+          <div style={{width:1,height:24,background:'#eee'}}/>
+          <div>
+            <div style={{fontWeight:600,fontSize:15,color:'#1a1a1a'}}>Archivo</div>
+            <div style={{fontSize:10,color:'#bbb'}}>{archivados.length} pedido{archivados.length!==1?'s':''} archivado{archivados.length!==1?'s':''}</div>
+          </div>
+        </div>
+      </header>
+      <div style={{maxWidth:720,margin:'0 auto',padding:16}}>
+        <div style={{position:'relative',marginBottom:16}}>
+          <svg style={{position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',color:'#bbb'}} width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.4"/><path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
+          <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Buscar… (varios términos separados por espacio)"
+            style={{width:'100%',border:'0.5px solid #ddd',borderRadius:10,padding:'10px 12px 10px 34px',fontSize:13,color:'#1a1a1a',background:'#fff',outline:'none'}}/>
+        </div>
+        {filtrados.length===0&&<div style={{textAlign:'center',padding:'60px 20px',color:'#bbb',fontSize:13}}>{query?'Sin resultados.':'El archivo está vacío.'}</div>}
+        {filtrados.map(card=>(
+          <div key={card.id} onClick={()=>onOpenCard(card)}
+            style={{background:'#fff',borderRadius:11,padding:'14px 16px',marginBottom:10,border:'0.5px solid rgba(0,0,0,0.08)',cursor:'pointer',transition:'box-shadow .15s'}}
+            onMouseEnter={e=>e.currentTarget.style.boxShadow='0 2px 12px rgba(0,0,0,0.08)'}
+            onMouseLeave={e=>e.currentTarget.style.boxShadow='none'}
+          >
+            <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',marginBottom:6}}>
+              <div>
+                <div style={{fontSize:14,fontWeight:600,color:'#aaa',textDecoration:'line-through',marginBottom:2}}>{card.cliente}</div>
+                {card.ubicacion&&<div style={{fontSize:11,color:'#bbb'}}>{card.ubicacion}</div>}
+                {card.creado_en&&<div style={{fontSize:10,color:'#ccc',marginTop:2}}>Creado: {card.creado_en}</div>}
+              </div>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:4}}>
+                <div style={{display:'inline-flex',alignItems:'center',gap:4,background:'#EAF3DE',color:'#27500A',fontSize:10,fontWeight:600,padding:'2px 8px',borderRadius:20}}><div style={{width:5,height:5,borderRadius:'50%',background:'#639922'}}/> Archivado</div>
+                <span style={{fontSize:10,color:'#bbb'}}>{card.fecha}</span>
+              </div>
+            </div>
+            <div style={{fontSize:11,color:'#888',lineHeight:1.65,marginBottom:8}}>
+              {card.productos.map((p,i)=><span key={i}>{p.cantidad} {p.nombre}{i<card.productos.length-1?' · ':''}</span>)}
+            </div>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                {card.responsables.map((r,i)=><Avatar key={i} name={r} size={22}/>)}
+                <span style={{fontSize:11,color:'#bbb',marginLeft:6}}>Pulsa para ver detalle</span>
+              </div>
+              {card.adjuntos.length>0&&<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,color:'#bbb'}}>
+                <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M10.5 5.5L5.5 10.5C4.4 11.6 2.6 11.6 1.5 10.5C0.4 9.4 0.4 7.6 1.5 6.5L6.5 1.5C7.2 0.8 8.3 0.8 9 1.5C9.7 2.2 9.7 3.3 9 4L4.5 8.5C4.2 8.8 3.7 8.8 3.5 8.5C3.2 8.2 3.2 7.8 3.5 7.5L7.5 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/></svg>
+                {card.adjuntos.length}
+              </span>}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Tablero ──────────────────────────────────────────────
+function Tablero({tableroId,onVolver,perfil,onLogout}) {
+  const cfg = TABLEROS[tableroId];
+  const [data,setData]=useState(Object.fromEntries(cfg.colKeys.map(k=>[k,[]])));
+  const [archivados,setArchivados]=useState([]);
+  const [loading,setLoading]=useState(true);
+  const [openCard,setOpenCard]=useState(null); // {card, colKey, esArchivado}
+  const [showNuevo,setShowNuevo]=useState(false);
+  const [vistaArchivo,setVistaArchivo]=useState(false);
+  const [toast,setToast]=useState(null);
+  const dragRef=useRef(null);
+  const [colActiva, setColActiva] = useState(0);
+  const [usuariosApp, setUsuariosApp] = useState([]);
+  const [moveMenu, setMoveMenu] = useState(null); // {card, colKey, position}
+  const [gruposApp, setGruposApp] = useState([]);
+
+  useEffect(()=>{
+    // Load real users for responsables selector
+    Promise.all([
+      sb.from('perfiles').select('nombre,id').eq('activo',true),
+      sb.from('grupos').select('nombre,miembros:grupos_usuarios(perfiles(nombre))'),
+    ]).then(([{data:u},{data:g}])=>{
+      const nombres = (u||[]).map(x=>x.nombre);
+      const gruposNombres = (g||[]).map(x=>x.nombre);
+      EQUIPO_DINAMICO = nombres;
+      setUsuariosApp(nombres);
+      setGruposApp(g||[]);
+    });
+  },[]);
+
+  function showToast(msg){setToast(msg);setTimeout(()=>setToast(null),2800);}
+
+  async function cargar() {
+    try {
+      const board = await cargarPedidosPorTablero(tableroId);
+      if (board) {
+        const d={};
+        cfg.colKeys.forEach(k=>d[k]=board[k]||[]);
+        setData(d);
+        setArchivados(board.archivados||[]);
+      }
+      setLoading(false);
+    } catch(e) { console.warn('cargar error:', e); setLoading(false); }
+  }
+
+  useEffect(()=>{cargar();},[]);
+
+  useEffect(()=>{
+    let ch = null;
+    let reconnectTimer = null;
+    let activo = true;
+
+    function conectar() {
+      if(!activo) return;
+      try {
+        if(ch) { sb.removeChannel(ch); ch = null; }
+        ch = sb.channel(`tablero-${tableroId}`)
+          .on('postgres_changes',{event:'*',schema:'public',table:'pedidos'},()=>{ if(activo) cargar(); })
+          .on('postgres_changes',{event:'INSERT',schema:'public',table:'actividad'},()=>{ if(activo) cargar(); })
+          .subscribe((status)=>{
+            if((status==='CHANNEL_ERROR'||status==='TIMED_OUT'||status==='CLOSED') && activo) {
+              clearTimeout(reconnectTimer);
+              reconnectTimer = setTimeout(conectar, 5000);
+            }
+          });
+      } catch(e) {
+        if(activo) reconnectTimer = setTimeout(conectar, 5000);
+      }
+    }
+
+    conectar();
+
+    // Reload data and reconnect when tab becomes visible
+    function onVisible() {
+      if(!document.hidden && activo) { cargar(); conectar(); }
+    }
+    document.addEventListener('visibilitychange', onVisible);
+
+    return ()=>{
+      activo = false;
+      clearTimeout(reconnectTimer);
+      if(ch) sb.removeChannel(ch);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  },[]);
+
+  async function handleMove(id,fromCol,toCol) {
+    try{await moverPedido(id,toCol,cfg.columnas[toCol].label,perfil);showToast(`Movido a ${cfg.columnas[toCol].label}`);setOpenCard(null);}
+    catch{showToast('Error al mover');}
+  }
+  async function handleArchive(id) {
+    try{await archivarPedido(id,perfil);showToast('Pedido archivado');setOpenCard(null);}
+    catch{showToast('Error al archivar');}
+  }
+  async function handleArchiveAll() {
+    const count=data.servidos?.length||0; if(!count)return;
+    try{await Promise.all((data.servidos||[]).map(c=>archivarPedido(c.id,perfil)));showToast(`${count} pedido${count!==1?'s':''} archivado${count!==1?'s':''}`);}
+    catch{showToast('Error al archivar');}
+  }
+  async function handleRestore(id) {
+    try{await restaurarPedido(id,perfil);showToast('Pedido restaurado a Pendiente');setOpenCard(null);}
+    catch{showToast('Error al restaurar');}
+  }
+  async function handleComment(id, texto) {
+    try {
+      await agregarComentario(id, texto, perfil);
+      showToast('Comentario añadido');
+      const board = await cargarPedidosPorTablero(tableroId);
+      if (board) {
+        const d={};
+        cfg.colKeys.forEach(k=>d[k]=board[k]||[]);
+        setData(d);
+        setArchivados(board.archivados||[]);
+        if (openCard) {
+          const col = openCard.esArchivado ? 'archivados' : openCard.colKey;
+          const lista = col==='archivados' ? board.archivados : board[col];
+          const updated = lista?.find(c=>c.id===openCard.card.id);
+          if (updated) setOpenCard(prev=>({...prev, card:updated}));
+        }
+      }
+    } catch(e) { console.error(e); showToast('Error al enviar comentario'); }
+  }
+  async function handleUpdateResp(id,responsables) {
+    try{await actualizarResponsables(id,responsables,perfil);}
+    catch{showToast('Error al actualizar');}
+  }
+  async function handleAdjuntar(id, file) {
+    await subirAdjunto(id, file);
+    showToast('Archivo adjuntado correctamente');
+    await cargar();
+  }
+  async function handleEditarPedido(id, fields) {
+    const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('TIMEOUT')),10000));
+    try {
+      await Promise.race([
+        (async()=>{
+        await sb.from('pedidos').update({
+        cliente:fields.cliente, ubicacion:fields.ubicacion,
+        urgencia:fields.urgencia||'cuando_pueda',
+        urgente:fields.urgencia==='urgente'||fields.urgencia==='hoy_manana',
+        notas:fields.notas,
+        actualizado_en:new Date(),
+      }).eq('id',id);
+      await sb.from('productos').delete().eq('pedido_id',id);
+      if(fields.productos?.length)
+        await sb.from('productos').insert(fields.productos.map(p=>({pedido_id:id,nombre:p.nombre,cantidad:p.cantidad})));
+      if(fields.responsables?.length)
+        await actualizarResponsables(id, fields.responsables, perfil);
+      await sb.from('actividad').insert({pedido_id:id,tipo:'mov',usuario:perfil?.nombre||perfil?.email||'Usuario',texto:'editó el pedido'});
+        })(),
+        timeout
+      ]);
+      showToast('Pedido actualizado');
+    } catch(e){
+      console.error(e);
+      if(e.message==='TIMEOUT') {
+        showToast('⚠️ Tiempo de espera agotado. Recarga la página e inténtalo de nuevo.');
+      } else {
+        showToast('Error al guardar cambios');
+      }
+    }
+  }
+  async function handleCreate(fields) {
+    const timeout = new Promise((_,reject)=>setTimeout(()=>reject(new Error('TIMEOUT')),10000));
+    try{
+      await Promise.race([crearPedidoEnBD(fields,tableroId,perfil), timeout]);
+      setShowNuevo(false);
+      showToast('Pedido creado');
+    } catch(e){
+      if(e.message==='TIMEOUT') {
+        showToast('⚠️ Sin respuesta del servidor. Recarga la página e inténtalo de nuevo. Tu pedido no se ha guardado.');
+      } else {
+        showToast('Error al crear el pedido. Inténtalo de nuevo.');
+      }
+    }
+  }
+
+  function onDragStart(id,colKey){dragRef.current={id,colKey};}
+  function onDragEnd(){dragRef.current=null;}
+  function onDrop(e,toCol){
+    e.preventDefault();
+    if(!dragRef.current)return;
+    const{id,colKey:fromCol}=dragRef.current;
+    if(fromCol!==toCol)handleMove(id,fromCol,toCol);
+    dragRef.current=null;
+  }
+
+
+  const [sessionExpired, setSessionExpired] = useState(false);
+
+  // Watch for session expiry
+  useEffect(()=>{
+    const check = setInterval(async()=>{
+      const {data:{session}} = await sb.auth.getSession();
+      if(!session) setSessionExpired(true);
+    }, 60000);
+    return ()=>{ clearInterval(check); };
+  },[]);
+
+  if(loading) return <Spinner msg="Cargando pedidos…"/>;
+
+  return (
+    <div style={{minHeight:'100vh',background:'#f0f0ec'}}>
+
+      {/* Vista archivo — se muestra encima pero el modal queda disponible siempre */}
+      {vistaArchivo && (
+        <Archivo archivados={archivados} headerColor={cfg.color}
+          onBack={()=>setVistaArchivo(false)}
+          onOpenCard={card=>setOpenCard({card,colKey:'archivados',esArchivado:true})}
+        />
+      )}
+
+      {/* Tablero principal — oculto cuando estamos en archivo */}
+      {!vistaArchivo && (<>
+      <header style={{background:'#fff',borderBottom:'0.5px solid #e4e4e0',padding:'0 16px',height:54,display:'flex',alignItems:'center',justifyContent:'space-between',position:'sticky',top:0,zIndex:50,boxShadow:'0 1px 8px rgba(0,0,0,0.06)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <button onClick={onVolver} title="Volver al inicio"
+            style={{width:30,height:30,borderRadius:8,background:cfg.color,display:'flex',alignItems:'center',justifyContent:'center',border:'none',cursor:'pointer',flexShrink:0}}
+            onMouseEnter={e=>e.currentTarget.style.opacity='.8'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}
+          >
+            <span style={{color:'#fff',fontSize:16,lineHeight:1}}>‹</span>
+          </button>
+          <img src={LOGO_ICON} style={{height:28,objectFit:'contain'}}/>
+          <div>
+            <div style={{fontWeight:600,fontSize:14,color:'#1a1a1a',lineHeight:1.2}}>{cfg.titulo}</div>
+            <div className="header-title-sub" style={{fontSize:10,color:'#bbb',lineHeight:1}}>{cfg.subtitulo}</div>
+          </div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          {perfil && <><CampanaNotif perfil={perfil}/><Avatar name={perfil.nombre} size={28}/><button onClick={onLogout} style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:7,padding:'5px 10px',fontSize:12,color:'#888',cursor:'pointer',fontWeight:500,marginRight:4}}>Salir</button></>}
+          <button onClick={()=>setVistaArchivo(true)}
+            style={{background:'#f0f0ec',color:'#666',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 13px',fontSize:13,fontWeight:500,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}
+            onMouseEnter={e=>e.currentTarget.style.background='#e8e8e4'} onMouseLeave={e=>e.currentTarget.style.background='#f0f0ec'}
+          >📦 Archivo {archivados.length>0&&<span style={{background:'#555',color:'#fff',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:600}}>{archivados.length}</span>}</button>
+          <button onClick={()=>setShowNuevo(true)}
+            style={{background:cfg.color,color:'#fff',border:'none',borderRadius:8,padding:'7px 15px',fontSize:13,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}
+            onMouseEnter={e=>e.currentTarget.style.opacity='.88'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}
+          ><span style={{fontSize:16,lineHeight:1}}>+</span> Nuevo pedido</button>
+        </div>
+      </header>
+
+      {/* Sesión caducada banner */}
+      {sessionExpired && (
+        <div style={{background:'#fff3cd',borderBottom:'1px solid #ffc107',padding:'10px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12}}>
+          <span style={{fontSize:13,color:'#856404',fontWeight:500}}>⚠️ Tu sesión ha caducado. Guarda lo que necesites y recarga la página para continuar.</span>
+          <button onClick={()=>window.location.reload()} style={{background:'#ffc107',border:'none',borderRadius:7,padding:'5px 12px',fontSize:12,fontWeight:600,cursor:'pointer',color:'#212529',flexShrink:0}}>Recargar</button>
+        </div>
+      )}
+      {/* ── NAVEGACIÓN MÓVIL entre columnas ── */}
+      <div className="mobile-col-nav" style={{display:'none',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:'#fff',borderBottom:'0.5px solid #eee'}}>
+        <button onClick={()=>setColActiva(i=>Math.max(0,i-1))}
+          disabled={colActiva===0}
+          style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:colActiva===0?'#ddd':'#555',padding:'4px 8px'}}>‹</button>
+        <div style={{display:'flex',gap:6}}>
+          {cfg.colKeys.map((k,i)=>(
+            <button key={k} onClick={()=>setColActiva(i)}
+              style={{width:8,height:8,borderRadius:'50%',border:'none',cursor:'pointer',
+                background:i===colActiva?cfg.color:'#ddd',padding:0,transition:'background .2s'}}/>
+          ))}
+        </div>
+        <button onClick={()=>setColActiva(i=>Math.min(cfg.colKeys.length-1,i+1))}
+          disabled={colActiva===cfg.colKeys.length-1}
+          style={{background:'none',border:'none',fontSize:20,cursor:'pointer',color:colActiva===cfg.colKeys.length-1?'#ddd':'#555',padding:'4px 8px'}}>›</button>
+      </div>
+
+      {/* ── TABLERO ── */}
+      <div className="board-grid" style={{display:'grid',gridTemplateColumns:`repeat(${cfg.colKeys.length},1fr)`,gap:10,padding:10}}>
+        {cfg.colKeys.map((colKey,idx)=>{
+          const col=cfg.columnas[colKey];
+          return (
+            <div key={colKey} onDragOver={e=>e.preventDefault()} onDrop={e=>onDrop(e,colKey)}
+              className={`col-item col-item-${idx}`}
+              style={{borderRadius:11,display:'flex',flexDirection:'column',background:col.bg,boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
+              <div style={{background:col.header,padding:'10px 13px',display:'flex',alignItems:'center',justifyContent:'space-between',borderRadius:'11px 11px 0 0',position:'sticky',top:54,zIndex:10}}>
+                <span style={{fontWeight:600,fontSize:13,color:'#fff'}}>{col.label}</span>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  {colKey==='servidos'&&(data.servidos?.length||0)>0&&(
+                    <button onClick={handleArchiveAll}
+                      style={{background:'rgba(255,255,255,0.18)',color:'#fff',border:'1px solid rgba(255,255,255,0.3)',borderRadius:6,padding:'2px 9px',fontSize:11,fontWeight:600,cursor:'pointer'}}
+                      onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.3)'}
+                      onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.18)'}
+                    >📦 Archivar todos</button>
+                  )}
+                  <span style={{background:'rgba(255,255,255,0.25)',borderRadius:20,padding:'2px 9px',fontSize:11,fontWeight:600,color:'#fff'}}>{data[colKey]?.length||0}</span>
+                </div>
+              </div>
+              <div style={{padding:'10px 8px 8px 8px',overflowY:'auto',maxHeight:'calc(100vh - 134px)'}}>
+                {colKey==='pedidos' && cfg.id==='clientes' ? (
+                  URGENCIAS.map(urg=>{
+                    const cardsUrg=(data[colKey]||[]).filter(c=>(c.urgencia||'cuando_pueda')===urg.id);
+                    return (
+                      <div key={urg.id} style={{marginBottom:10}}>
+                        <div style={{display:'flex',alignItems:'center',gap:6,padding:'5px 4px 6px 4px'}}>
+                          <span style={{width:8,height:8,borderRadius:'50%',background:urg.dot,flexShrink:0,display:'inline-block'}}></span>
+                          <span style={{fontSize:11,fontWeight:600,color:urg.color,textTransform:'uppercase',letterSpacing:'.04em'}}>{urg.label}</span>
+                          <span style={{fontSize:10,color:'#bbb'}}>({cardsUrg.length})</span>
+                        </div>
+                        {cardsUrg.length===0
+                          ? <div style={{fontSize:11,color:'#ccc',fontStyle:'italic',padding:'2px 8px 8px'}}>Sin pedidos</div>
+                          : cardsUrg.map(card=>(
+                              <Card key={card.id} card={card} colKey={colKey} colStyles={cfg.columnas}
+                                onOpen={(c,k)=>setOpenCard({card:c,colKey:k,esArchivado:false})}
+                                onDragStart={onDragStart} onDragEnd={onDragEnd}
+                                onMoveMenu={(c,k,pos)=>setMoveMenu({card:c,colKey:k,position:pos})}/>
+                            ))
+                        }
+                      </div>
+                    );
+                  })
+                ) : (
+                  <>
+                  {(data[colKey]||[]).map(card=>(
+                    <Card key={card.id} card={card} colKey={colKey} colStyles={cfg.columnas}
+                      onOpen={(c,k)=>setOpenCard({card:c,colKey:k,esArchivado:false})}
+                      onDragStart={onDragStart} onDragEnd={onDragEnd}/>
+                  ))}
+                  {(data[colKey]?.length||0)===0&&<div style={{textAlign:'center',padding:'30px 10px',fontSize:12,color:'rgba(0,0,0,0.22)',fontStyle:'italic'}}>Sin pedidos</div>}
+                  </>
+                )}
+                {colKey==='pedidos'&&(
+                  <button onClick={()=>setShowNuevo(true)}
+                    style={{width:'100%',background:'none',border:'0.5px dashed rgba(0,0,0,0.15)',borderRadius:9,padding:'10px',fontSize:12,color:'#aaa',cursor:'pointer',marginTop:2}}
+                    onMouseEnter={e=>{e.currentTarget.style.borderColor=cfg.color;e.currentTarget.style.color=cfg.color}}
+                    onMouseLeave={e=>{e.currentTarget.style.borderColor='rgba(0,0,0,0.15)';e.currentTarget.style.color='#aaa'}}
+                  >+ Añadir pedido</button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+    </div>
+      <style>{`
+        .col-item-${colActiva} { display: flex !important; }
+      `}</style>
+      </>)} {/* fin !vistaArchivo */}
+
+      {/* Modal detalle — disponible tanto en tablero como en archivo */}
+      {moveMenu && (
+        <MoveMenu
+          card={moveMenu.card} colKey={moveMenu.colKey}
+          colStyles={cfg.columnas} colKeys={cfg.colKeys}
+          position={moveMenu.position}
+          onMove={handleMove}
+          onClose={()=>setMoveMenu(null)}
+        />
+      )}
+      {openCard && (
+        <ModalDetalle
+          card={openCard.card} colKey={openCard.colKey}
+          colStyles={cfg.columnas} colKeys={cfg.colKeys}
+          esArchivado={openCard.esArchivado}
+          headerColor={openCard.esArchivado ? '#555' : cfg.columnas[openCard.colKey]?.header}
+          onClose={()=>setOpenCard(null)}
+          onMove={handleMove} onArchive={handleArchive}
+          onRestore={handleRestore}
+          onComment={handleComment}
+          onUpdateResponsables={handleUpdateResp}
+          onAdjuntarArchivo={handleAdjuntar}
+          onEditarPedido={handleEditarPedido}
+          perfil={perfil}
+          usuarios={usuariosApp}
+          grupos={gruposApp}
+        />
+      )}
+      {showNuevo&&<ModalNuevo onClose={()=>setShowNuevo(false)} onCreate={handleCreate} headerColor={cfg.color} usuarios={usuariosApp} grupos={gruposApp}/>}
+      {toast&&<Toast msg={toast}/>}
+    </div>
+  );
+}
+
+
+
+// ── Campana de notificaciones ────────────────────────────
+function CampanaNotif({perfil}) {
+  const [notifs, setNotifs] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [prefs, setPrefs] = useState(null);
+
+  async function cargar() {
+    if (!perfil?.id) return;
+    const {data} = await sb.from('notificaciones')
+      .select('*').eq('usuario_id', perfil.id)
+      .order('creado_en', {ascending:false}).limit(30);
+    setNotifs(data||[]);
+  }
+
+  async function cargarPrefs() {
+    const {data} = await sb.from('perfiles').select('notif_asignado,notif_comentario,notif_movimiento').eq('id',perfil.id).single();
+    setPrefs(data);
+  }
+
+  async function marcarLeidas() {
+    await sb.from('notificaciones').update({leida:true}).eq('usuario_id',perfil.id).eq('leida',false);
+    cargar();
+  }
+
+  async function togglePref(campo, val) {
+    await sb.from('perfiles').update({[campo]:val}).eq('id',perfil.id);
+    setPrefs(p=>({...p,[campo]:val}));
+  }
+
+  useEffect(()=>{
+    cargar(); cargarPrefs();
+    let chNotif = null;
+    let notifTimer = null;
+    let notifActivo = true;
+
+    function conectarNotif() {
+      if(!notifActivo) return;
+      try {
+        if(chNotif) { sb.removeChannel(chNotif); chNotif = null; }
+        chNotif = sb.channel('notif-'+perfil.id)
+          .on('postgres_changes',{event:'INSERT',schema:'public',table:'notificaciones',
+            filter:`usuario_id=eq.${perfil.id}`},()=>{ if(notifActivo) cargar(); })
+          .subscribe((status)=>{
+            if((status==='CHANNEL_ERROR'||status==='TIMED_OUT'||status==='CLOSED') && notifActivo) {
+              clearTimeout(notifTimer);
+              notifTimer = setTimeout(conectarNotif, 5000);
+            }
+          });
+      } catch(e) {
+        if(notifActivo) notifTimer = setTimeout(conectarNotif, 5000);
+      }
+    }
+
+    conectarNotif();
+    return ()=>{
+      notifActivo = false;
+      clearTimeout(notifTimer);
+      if(chNotif) sb.removeChannel(chNotif);
+    };
+  },[perfil?.id]);
+
+  const noLeidas = notifs.filter(n=>!n.leida).length;
+  const iconos = {asignado:'👤',comentario:'💬',movimiento:'🔄'};
+
+  return (
+    <div style={{position:'relative'}}>
+      <button onClick={()=>{setOpen(o=>!o);if(!open)marcarLeidas();}}
+        style={{position:'relative',background:'none',border:'none',cursor:'pointer',padding:'4px 6px',borderRadius:8,display:'flex',alignItems:'center'}}>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={noLeidas>0?'#3a9e3f':'#888'} strokeWidth="2" strokeLinecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        {noLeidas>0 && <span style={{position:'absolute',top:0,right:0,width:16,height:16,background:'#e53935',borderRadius:'50%',fontSize:9,fontWeight:700,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center'}}>{noLeidas>9?'9+':noLeidas}</span>}
+      </button>
+
+      {open && (
+        <div style={{position:'absolute',right:0,top:'100%',width:320,background:'#fff',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.18)',zIndex:300,overflow:'hidden',marginTop:6}}>
+          <div style={{padding:'12px 16px',borderBottom:'0.5px solid #eee',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{fontWeight:600,fontSize:14,color:'#1a1a1a'}}>Notificaciones</span>
+            <button onClick={()=>setOpen(false)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:18}}>✕</button>
+          </div>
+
+          {/* Preferencias */}
+          {prefs && (
+            <div style={{padding:'8px 16px',borderBottom:'0.5px solid #eee',background:'#fafafa'}}>
+              <div style={{fontSize:10,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:6}}>Activar avisos para</div>
+              <div style={{display:'flex',flexDirection:'column',gap:4}}>
+                {[
+                  {campo:'notif_asignado',label:'Cuando me asignan un pedido'},
+                  {campo:'notif_comentario',label:'Nuevos comentarios en mis pedidos'},
+                  {campo:'notif_movimiento',label:'Cambios de estado en mis pedidos'},
+                ].map(({campo,label})=>(
+                  <label key={campo} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',fontSize:12,color:'#555'}}>
+                    <input type="checkbox" checked={prefs[campo]!==false} onChange={e=>togglePref(campo,e.target.checked)}
+                      style={{width:14,height:14,accentColor:'#3a9e3f'}}/>
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Lista notificaciones */}
+          <div style={{maxHeight:280,overflowY:'auto'}}>
+            {notifs.length===0 && <div style={{padding:'24px 16px',textAlign:'center',fontSize:12,color:'#bbb'}}>Sin notificaciones</div>}
+            {notifs.map(n=>(
+              <div key={n.id} style={{padding:'10px 16px',borderBottom:'0.5px solid #f0f0f0',background:n.leida?'#fff':'#f5faf5',display:'flex',gap:10,alignItems:'flex-start'}}>
+                <span style={{fontSize:16,flexShrink:0,marginTop:1}}>{iconos[n.tipo]||'🔔'}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,color:'#1a1a1a',lineHeight:1.4}}>{n.texto}</div>
+                  <div style={{fontSize:10,color:'#bbb',marginTop:3}}>{new Date(n.creado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'})}</div>
+                </div>
+                {!n.leida && <div style={{width:7,height:7,borderRadius:'50%',background:'#3a9e3f',flexShrink:0,marginTop:4}}/>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Panel de Administración ──────────────────────────────
+function PanelAdmin({perfil, onCerrar}) {
+  const [tab, setTab] = useState('usuarios'); // 'usuarios' | 'grupos'
+  const [usuarios, setUsuarios] = useState([]);
+  const [grupos, setGrupos] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [nuevoGrupo, setNuevoGrupo] = useState('');
+  function showToast(msg){setToast(msg);setTimeout(()=>setToast(null),2800);}
+  async function cargar(){
+    const [{data:u},{data:g}] = await Promise.all([
+      sb.from('perfiles').select('*').order('creado_en'),
+      sb.from('grupos').select('*,miembros:grupos_usuarios(perfil_id,perfiles(nombre))').order('nombre'),
+    ]);
+    setUsuarios(u||[]); setGrupos(g||[]); setLoading(false);
+  }
+  async function crearGrupo(){
+    if(!nuevoGrupo.trim()) return;
+    await sb.from('grupos').insert({nombre:nuevoGrupo.trim()});
+    setNuevoGrupo(''); cargar(); showToast('Grupo creado');
+  }
+  async function eliminarGrupo(id){
+    if(!confirm('¿Eliminar este grupo?')) return;
+    await sb.from('grupos').delete().eq('id',id);
+    cargar(); showToast('Grupo eliminado');
+  }
+  async function toggleMiembro(grupoId, perfilId, esMiembro){
+    if(esMiembro) {
+      await sb.from('grupos_usuarios').delete().eq('grupo_id',grupoId).eq('perfil_id',perfilId);
+    } else {
+      await sb.from('grupos_usuarios').insert({grupo_id:grupoId, perfil_id:perfilId});
+    }
+    cargar();
+  }
+  async function toggleAdmin(u){
+    await sb.from('perfiles').update({es_admin:!u.es_admin}).eq('id',u.id);
+    showToast(!u.es_admin?`${u.nombre} ahora es admin`:`${u.nombre} ya no es admin`);
+    cargar();
+  }
+  async function toggleActivo(u){
+    if(u.activo!==false && !confirm(`¿Desactivar a ${u.nombre}?`)) return;
+    await sb.from('perfiles').update({activo:u.activo===false?true:false}).eq('id',u.id);
+    showToast(u.activo===false?`${u.nombre} reactivado`:`${u.nombre} desactivado`);
+    cargar();
+  }
+  useEffect(()=>{cargar();},[]);
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 16px',zIndex:200,overflowY:'auto'}} onClick={e=>{if(e.target===e.currentTarget)onCerrar()}}>
+      <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:500,marginTop:20,overflow:'hidden',boxShadow:'0 20px 60px rgba(0,0,0,0.28)'}}>
+        <div style={{background:'#3a9e3f',padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+          <span style={{fontSize:15,fontWeight:600,color:'#fff'}}>⚙️ Administración</span>
+          <button onClick={onCerrar} style={{background:'none',border:'none',color:'rgba(255,255,255,0.8)',fontSize:20,cursor:'pointer'}}>✕</button>
+        </div>
+        <div style={{display:'flex',borderBottom:'0.5px solid #eee'}}>
+          {['usuarios','grupos'].map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'10px',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
+              background:tab===t?'#fff':'#f5f5f3',color:tab===t?'#3a9e3f':'#aaa',
+              borderBottom:tab===t?'2px solid #3a9e3f':'2px solid transparent'}}>
+              {t==='usuarios'?'👥 Usuarios':'🏷️ Grupos'}
+            </button>
+          ))}
+        </div>
+        <div style={{padding:'16px 18px'}}>
+          {loading?<div style={{textAlign:'center',padding:30,color:'#bbb'}}>Cargando…</div>:tab==='usuarios'?(
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {usuarios.map(u=>(
+                <div key={u.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:u.activo===false?'#fafafa':'#fff',border:'0.5px solid',borderColor:u.activo===false?'#eee':'#e8e8e4',borderRadius:10,opacity:u.activo===false?0.6:1}}>
+                  <Avatar name={u.nombre} size={36}/>
+                  <div style={{flex:1}}>
+                    <div style={{display:'flex',alignItems:'center',gap:6}}>
+                      <span style={{fontSize:13,fontWeight:600,color:'#1a1a1a'}}>{u.nombre}</span>
+                      {u.es_admin&&<span style={{fontSize:10,fontWeight:600,background:'#e8f5e9',color:'#2e7d32',padding:'1px 7px',borderRadius:20}}>Admin</span>}
+                      {u.activo===false&&<span style={{fontSize:10,fontWeight:600,background:'#fdecea',color:'#c0392b',padding:'1px 7px',borderRadius:20}}>Desactivado</span>}
+                    </div>
+                    <div style={{fontSize:11,color:'#aaa'}}>{u.email}</div>
+                  </div>
+                  {u.id!==perfil.id?(
+                    <div style={{display:'flex',gap:6}}>
+                      <button onClick={()=>toggleAdmin(u)} style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:7,padding:'5px 10px',fontSize:11,cursor:'pointer',color:'#555',fontWeight:500}}>
+                        {u.es_admin?'Quitar admin':'Hacer admin'}
+                      </button>
+                      <button onClick={()=>toggleActivo(u)} style={{background:u.activo===false?'#e8f5e9':'#fdecea',border:'0.5px solid',borderColor:u.activo===false?'#b5d9b6':'#f5c0bc',borderRadius:7,padding:'5px 10px',fontSize:11,cursor:'pointer',color:u.activo===false?'#2e7d32':'#c0392b',fontWeight:500}}>
+                        {u.activo===false?'Reactivar':'Desactivar'}
+                      </button>
+                    </div>
+                  ):<span style={{fontSize:11,color:'#bbb',fontStyle:'italic'}}>Tú</span>}
+                </div>
+              ))}
+            </div>
+          ):( /* tab grupos */
+            <div style={{display:'flex',flexDirection:'column',gap:12}}>
+              <div style={{display:'flex',gap:8}}>
+                <input value={nuevoGrupo} onChange={e=>setNuevoGrupo(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')crearGrupo();}}
+                  placeholder="Nombre del grupo (ej: Orihuela, Almacén...)"
+                  style={{flex:1,border:'0.5px solid #ddd',borderRadius:8,padding:'8px 11px',fontSize:13,outline:'none'}}/>
+                <button onClick={crearGrupo} style={{background:'#3a9e3f',color:'#fff',border:'none',borderRadius:8,padding:'8px 14px',fontSize:13,fontWeight:600,cursor:'pointer'}}>+ Crear</button>
+              </div>
+              {grupos.length===0&&<div style={{textAlign:'center',padding:20,color:'#bbb',fontSize:13}}>Sin grupos creados</div>}
+              {grupos.map(g=>(
+                <div key={g.id} style={{border:'0.5px solid #e8e8e4',borderRadius:10,overflow:'hidden'}}>
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 14px',background:'#f8f8f6'}}>
+                    <span style={{fontWeight:600,fontSize:14,color:'#1a1a1a'}}>🏷️ {g.nombre}</span>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <span style={{fontSize:11,color:'#aaa'}}>{(g.miembros||[]).length} miembro{(g.miembros||[]).length!==1?'s':''}</span>
+                      <button onClick={()=>eliminarGrupo(g.id)} style={{background:'#fdecea',border:'none',borderRadius:6,padding:'3px 8px',fontSize:11,color:'#c0392b',cursor:'pointer',fontWeight:500}}>Eliminar</button>
+                    </div>
+                  </div>
+                  <div style={{padding:'10px 14px',display:'flex',flexWrap:'wrap',gap:6}}>
+                    {usuarios.filter(u=>u.activo!==false).map(u=>{
+                      const esMiembro=(g.miembros||[]).some(m=>m.perfil_id===u.id);
+                      return (
+                        <button key={u.id} onClick={()=>toggleMiembro(g.id,u.id,esMiembro)}
+                          style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px 4px 5px',borderRadius:20,border:'0.5px solid',cursor:'pointer',fontSize:12,fontWeight:500,transition:'all .15s',
+                            background:esMiembro?'#e8f5e9':'#f5f5f3',
+                            borderColor:esMiembro?'#b5d9b6':'#ddd',
+                            color:esMiembro?'#2e7d32':'#888'}}>
+                          <Avatar name={u.nombre} size={18}/>
+                          {u.nombre}
+                          {esMiembro&&<span style={{fontSize:14,lineHeight:1}}>✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      {toast&&<Toast msg={toast}/>}
+    </div>
+  );
+}
+
+// ── Pantalla Login / Registro ────────────────────────────
+function PantallaAuth({onLogin}) {
+  const [modo,setModo]=useState('login');
+  const [email,setEmail]=useState('');
+  const [password,setPassword]=useState('');
+  const [nombre,setNombre]=useState('');
+  const [error,setError]=useState('');
+  const [loading,setLoading]=useState(false);
+  const [msg,setMsg]=useState('');
+
+  async function handleLogin(e){
+    e.preventDefault(); setError(''); setLoading(true);
+    const {data,error}=await sb.auth.signInWithPassword({email,password});
+    if(error){setError('Email o contraseña incorrectos.');setLoading(false);return;}
+    const {data:p}=await sb.from('perfiles').select('*').eq('id',data.user.id).single();
+    if(p?.activo===false){await sb.auth.signOut();setError('Tu cuenta ha sido desactivada. Contacta con el administrador.');setLoading(false);return;}
+    onLogin(data.user,p);
+    setLoading(false);
+  }
+
+  async function handleRegistro(e){
+    e.preventDefault();
+    if(!nombre.trim()){setError('El nombre es obligatorio.');return;}
+    setError(''); setLoading(true);
+    const {data,error}=await sb.auth.signUp({email,password});
+    if(error){setError(error.message);setLoading(false);return;}
+    if(data.user){
+      await sb.from('perfiles').insert({id:data.user.id,nombre:nombre.trim(),email,es_admin:false,activo:true});
+      if(data.session){
+        const {data:p}=await sb.from('perfiles').select('*').eq('id',data.user.id).single();
+        onLogin(data.user,p);
+      } else {
+        setMsg('Cuenta creada. Revisa tu email para confirmar y luego inicia sesión.');
+        setModo('login'); setPassword('');
+      }
+    }
+    setLoading(false);
+  }
+
+  const inp={width:'100%',border:'0.5px solid #ddd',borderRadius:9,padding:'10px 12px',fontSize:14,color:'#1a1a1a',background:'#f8f8f6',outline:'none',fontFamily:'DM Sans,sans-serif'};
+  return (
+    <div style={{minHeight:'100vh',background:'#f5faf5',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div style={{width:'100%',maxWidth:380,background:'#fff',borderRadius:16,overflow:'hidden',boxShadow:'0 4px 24px rgba(0,0,0,0.10)'}}>
+        <div style={{background:'#3a9e3f',padding:'24px 28px 20px',textAlign:'center'}}>
+          <img src={LOGO_FULL} style={{height:40,objectFit:'contain',marginBottom:8,display:'block',margin:'0 auto 8px'}}/>
+          <div style={{fontSize:12,color:'rgba(255,255,255,0.85)',fontWeight:500,letterSpacing:'.06em',textTransform:'uppercase'}}>Gestión de pedidos</div>
+        </div>
+        <div style={{padding:'24px 28px'}}>
+          <div style={{display:'flex',background:'#f0f0ec',borderRadius:9,padding:3,marginBottom:20}}>
+            {[{id:'login',label:'Iniciar sesión'},{id:'registro',label:'Registrarse'}].map(m=>(
+              <button key={m.id} onClick={()=>{setModo(m.id);setError('');setMsg('');}}
+                style={{flex:1,padding:'7px',borderRadius:7,border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
+                  background:modo===m.id?'#fff':'transparent',color:modo===m.id?'#1a1a1a':'#aaa',
+                  boxShadow:modo===m.id?'0 1px 4px rgba(0,0,0,0.1)':'none',transition:'all .15s'}}>
+                {m.label}
+              </button>
+            ))}
+          </div>
+          {msg&&<div style={{background:'#edf7ed',border:'0.5px solid #b5d9b6',borderRadius:8,padding:'10px 12px',fontSize:12,color:'#2e7d32',marginBottom:14}}>{msg}</div>}
+          {error&&<div style={{background:'#fdecea',border:'0.5px solid #f5c0bc',borderRadius:8,padding:'10px 12px',fontSize:12,color:'#c0392b',marginBottom:14}}>{error}</div>}
+          <form onSubmit={modo==='login'?handleLogin:handleRegistro} style={{display:'flex',flexDirection:'column',gap:12}}>
+            {modo==='registro'&&(
+              <div>
+                <div style={{fontSize:11,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Nombre</div>
+                <input value={nombre} onChange={e=>setNombre(e.target.value)} placeholder="Tu nombre completo" style={inp} required/>
+              </div>
+            )}
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Email</div>
+              <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="tu@email.com" style={inp} required/>
+            </div>
+            <div>
+              <div style={{fontSize:11,fontWeight:600,color:'#aaa',textTransform:'uppercase',letterSpacing:'.06em',marginBottom:5}}>Contraseña</div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Mínimo 6 caracteres" style={inp} required minLength={6}/>
+            </div>
+            <button type="submit" disabled={loading}
+              style={{background:'#3a9e3f',color:'#fff',border:'none',borderRadius:9,padding:'12px',fontSize:14,fontWeight:600,cursor:'pointer',marginTop:4,opacity:loading?0.6:1}}>
+              {loading?'Cargando…':modo==='login'?'Entrar':'Crear cuenta'}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App raíz ─────────────────────────────────────────────
+function App() {
+  const [usuario,setUsuario]=useState(null);
+  const [perfil,setPerfil]=useState(null);
+  const [checkingAuth,setCheckingAuth]=useState(true);
+  const [tablero,setTablero]=useState(null);
+
+  useEffect(()=>{
+    sb.auth.getSession().then(async ({data:{session}})=>{
+      if(session){
+        const {data:p}=await sb.from('perfiles').select('*').eq('id',session.user.id).single();
+        if(p?.activo!==false){ setUsuario(session.user); setPerfil(p); }
+        else await sb.auth.signOut();
+      }
+      setCheckingAuth(false);
+    });
+    const {data:{subscription}}=sb.auth.onAuthStateChange(async(event,session)=>{
+      if(event==='SIGNED_OUT'){setUsuario(null);setPerfil(null);setTablero(null);}
+      if(event==='TOKEN_REFRESHED'&&session){
+        // Session refreshed successfully - update user state
+        const {data:p}=await sb.from('perfiles').select('*').eq('id',session.user.id).single();
+        if(p?.activo!==false){setUsuario(session.user);setPerfil(p);}
+      }
+    });
+
+    // Check session every 3 minutes and refresh if needed
+    const sessionInterval = setInterval(async()=>{
+      const {data:{session}, error} = await sb.auth.getSession();
+      if(error || !session) {
+        clearInterval(sessionInterval);
+        setUsuario(null); setPerfil(null); setTablero(null);
+      } else {
+        // Proactively refresh token if it expires in less than 10 minutes
+        const expiresAt = session.expires_at * 1000;
+        const tenMin = 10 * 60 * 1000;
+        if(expiresAt - Date.now() < tenMin) {
+          await sb.auth.refreshSession();
+        }
+      }
+    }, 3 * 60 * 1000);
+
+    return ()=>{ subscription.unsubscribe(); clearInterval(sessionInterval); };
+  },[]);
+
+  async function handleLogout(){await sb.auth.signOut();}
+
+  if(checkingAuth) return <Spinner msg="Cargando…"/>;
+  if(!usuario) return <PantallaAuth onLogin={(u,p)=>{setUsuario(u);setPerfil(p);}}/>;
+  if(!tablero) return <Inicio onSelect={setTablero} perfil={perfil} onLogout={handleLogout}/>;
+  return <Tablero tableroId={tablero} onVolver={()=>setTablero(null)} perfil={perfil} onLogout={handleLogout}/>;
+}
+
+
+
+export default App;
