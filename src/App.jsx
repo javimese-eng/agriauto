@@ -795,12 +795,24 @@ function Archivo({archivados,onBack,onOpenCard,headerColor='#3a9e3f'}) {
         </div>
       </header>
       <div style={{maxWidth:720,margin:'0 auto',padding:16}}>
-        <div style={{position:'relative',marginBottom:16}}>
+         <div style={{position:'relative',marginBottom:10}}>
           <svg style={{position:'absolute',left:12,top:'50%',transform:'translateY(-50%)',color:'#bbb'}} width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" strokeWidth="1.4"/><path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"/></svg>
           <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="Buscar… (varios términos separados por espacio)"
             style={{width:'100%',border:'0.5px solid #ddd',borderRadius:10,padding:'10px 12px 10px 34px',fontSize:13,color:'#1a1a1a',background:'#fff',outline:'none'}}/>
         </div>
-        {filtrados.length===0&&<div style={{textAlign:'center',padding:'60px 20px',color:'#bbb',fontSize:13}}>{query?'Sin resultados.':'El archivo está vacío.'}</div>}
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,color:'#999',fontWeight:500}}>📅 Creado entre</span>
+          <input type="date" value={fechaDesde} onChange={e=>setFechaDesde(e.target.value)}
+            style={{border:'0.5px solid #ddd',borderRadius:8,padding:'7px 10px',fontSize:12,color:'#1a1a1a',background:'#fff',outline:'none'}}/>
+          <span style={{fontSize:12,color:'#999'}}>y</span>
+          <input type="date" value={fechaHasta} onChange={e=>setFechaHasta(e.target.value)}
+            style={{border:'0.5px solid #ddd',borderRadius:8,padding:'7px 10px',fontSize:12,color:'#1a1a1a',background:'#fff',outline:'none'}}/>
+          {(fechaDesde||fechaHasta)&&(
+            <button onClick={()=>{setFechaDesde('');setFechaHasta('');}}
+              style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 10px',fontSize:12,color:'#888',cursor:'pointer',fontWeight:500}}>✕ Limpiar fechas</button>
+          )}
+        </div>
+        {filtrados.length===0&&<div style={{textAlign:'center',padding:'60px 20px',color:'#bbb',fontSize:13}}>{(query||fechaDesde||fechaHasta)?'Sin resultados.':'El archivo está vacío.'}</div>}
         {filtrados.map(card=>(
           <div key={card.id} onClick={()=>onOpenCard(card)}
             style={{background:'#fff',borderRadius:11,padding:'14px 16px',marginBottom:10,border:'0.5px solid rgba(0,0,0,0.08)',cursor:'pointer',transition:'box-shadow .15s'}}
