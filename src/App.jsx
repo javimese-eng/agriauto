@@ -130,12 +130,16 @@ async function activarPushNotifs(usuarioId) {
       });
     }
     const json = sub.toJSON();
-    await sb.from('push_subscriptions').upsert({
+    const { error: upsertErr } = await sb.from('push_subscriptions').upsert({
       usuario_id: usuarioId,
       endpoint: json.endpoint,
       p256dh: json.keys.p256dh,
       auth: json.keys.auth,
     }, { onConflict: 'endpoint' });
+    if (upsertErr) {
+      console.error('Error guardando suscripción', upsertErr);
+      return { ok:false, error:'Error guardando suscripción: '+upsertErr.message };
+    }
     return { ok:true };
   } catch(e) {
     console.error('Error activando push', e);
