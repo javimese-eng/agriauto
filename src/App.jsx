@@ -1108,8 +1108,8 @@ function Tablero({tableroId,onVolver,perfil,onLogout}) {
           return (
             <div key={colKey} onDragOver={e=>e.preventDefault()} onDrop={e=>onDrop(e,colKey)}
               className={`col-item col-item-${idx}`}
-              style={{borderRadius:11,display:'flex',flexDirection:'column',background:col.bg,boxShadow:'0 1px 4px rgba(0,0,0,0.06)'}}>
-              <div className="col-header-sticky" style={{background:col.header,padding:'10px 13px',display:'flex',alignItems:'center',justifyContent:'space-between',borderRadius:'11px 11px 0 0',position:'sticky',top:54,zIndex:10}}>
+              style={{borderRadius:11,display:'flex',flexDirection:'column',background:col.bg,boxShadow:'0 1px 4px rgba(0,0,0,0.06)',height:'calc(100vh - 74px)',overflow:'hidden'}}>
+              <div className="col-header-sticky" style={{background:col.header,padding:'10px 13px',display:'flex',alignItems:'center',justifyContent:'space-between',borderRadius:'11px 11px 0 0',flexShrink:0}}>
                 <span style={{fontWeight:600,fontSize:13,color:'#fff'}}>{col.label}</span>
                 <div style={{display:'flex',alignItems:'center',gap:6}}>
                   {colKey==='servidos'&&(data.servidos?.length||0)>0&&(
@@ -1122,7 +1122,7 @@ function Tablero({tableroId,onVolver,perfil,onLogout}) {
                   <span style={{background:'rgba(255,255,255,0.25)',borderRadius:20,padding:'2px 9px',fontSize:11,fontWeight:600,color:'#fff'}}>{data[colKey]?.length||0}</span>
                 </div>
               </div>
-               <div className="cards-scroll" style={{padding:'10px 8px 8px 8px',overflowY:'auto',maxHeight:'calc(100vh - 134px)'}}>
+                <div className="cards-scroll" style={{padding:'10px 8px 8px 8px',overflowY:'auto',flex:1,minHeight:0}}>
                 {colKey==='pedidos' && cfg.id==='clientes' ? (
                   URGENCIAS.map(urg=>{
                     const cardsUrg=(data[colKey]||[]).filter(c=>(c.urgencia||'cuando_pueda')===urg.id);
