@@ -7,10 +7,14 @@ input:focus, textarea:focus { border-color: #3a9e3f !important; box-shadow: 0 0 
 .mobile-col-nav { display: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+:root { --header-h: 54px; --mobile-nav-h: 0px; }
 @media (max-width: 640px) {
+  :root { --mobile-nav-h: 41px; }
   .mobile-col-nav { display: flex !important; }
   .board-grid { display: block !important; padding: 8px !important; }
   .col-item { display: none !important; }
   .col-item.col-active { display: flex !important; }
   .header-title-sub { display: none; }
+  .col-header-sticky { top: calc(var(--header-h) + var(--mobile-nav-h)) !important; }
+  .cards-scroll { max-height: calc(100vh - var(--header-h) - var(--mobile-nav-h) - 41px) !important; }
 }
