@@ -1063,7 +1063,7 @@ function Tablero({tableroId,onVolver,perfil,onLogout}) {
             style={{background:'#f0f0ec',color:'#666',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 13px',fontSize:13,fontWeight:500,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}
             onMouseEnter={e=>e.currentTarget.style.background='#e8e8e4'} onMouseLeave={e=>e.currentTarget.style.background='#f0f0ec'}
           >📦 Archivo {archivados.length>0&&<span style={{background:'#555',color:'#fff',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:600}}>{archivados.length}</span>}</button>
-          <button onClick={()=>setShowNuevo(true)}
+          <button onClick={()=>setShowNuevo(true)} className="btn-nuevo-desktop"
             style={{background:cfg.color,color:'#fff',border:'none',borderRadius:8,padding:'7px 15px',fontSize:13,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}
             onMouseEnter={e=>e.currentTarget.style.opacity='.88'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}
           ><span style={{fontSize:16,lineHeight:1}}>+</span> Nuevo pedido</button>
@@ -1077,6 +1077,13 @@ function Tablero({tableroId,onVolver,perfil,onLogout}) {
           <button onClick={()=>window.location.reload()} style={{background:'#ffc107',border:'none',borderRadius:7,padding:'5px 12px',fontSize:12,fontWeight:600,cursor:'pointer',color:'#212529',flexShrink:0}}>Recargar</button>
         </div>
       )}
+        {/* ── BARRA NUEVO PEDIDO MÓVIL ── */}
+      <div className="mobile-nuevo-bar" style={{display:'none',padding:'8px 12px',background:'#fff',borderBottom:'0.5px solid #eee'}}>
+        <button onClick={()=>setShowNuevo(true)}
+          style={{width:'100%',background:cfg.color,color:'#fff',border:'none',borderRadius:8,padding:'9px 15px',fontSize:13,fontWeight:600,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:5}}
+        ><span style={{fontSize:16,lineHeight:1}}>+</span> Nuevo pedido</button>
+      </div>
+        
       {/* ── NAVEGACIÓN MÓVIL entre columnas ── */}
       <div className="mobile-col-nav" style={{display:'none',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',background:'#fff',borderBottom:'0.5px solid #eee'}}>
         <button onClick={()=>setColActiva(i=>Math.max(0,i-1))}
