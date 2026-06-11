@@ -19,4 +19,14 @@ input:focus, textarea:focus { border-color: #3a9e3f !important; box-shadow: 0 0 
   .col-item.col-active { display: flex !important; height: calc(100vh - var(--header-h) - var(--mobile-nav-h) - var(--nuevo-bar-h) - 16px) !important; }
   .header-title-sub { display: none; }
   .col-header-sticky { position: static !important; top: auto !important; }
+    .campana-dropdown {
+    position: fixed !important;
+    left: 12px !important;
+    right: 12px !important;
+    top: 60px !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100vh - 80px);
+    overflow-y: auto !important;
+  }
 }
