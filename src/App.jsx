@@ -762,9 +762,17 @@ function ModalNuevo({onClose,onCreate,headerColor='#3a9e3f',usuarios=[],grupos=[
 // ── Vista Archivo ────────────────────────────────────────
 function Archivo({archivados,onBack,onOpenCard,headerColor='#3a9e3f'}) {
   const [query,setQuery]=useState('');
+  const [fechaDesde,setFechaDesde]=useState('');
+  const [fechaHasta,setFechaHasta]=useState('');
   // Multi-term search: split by space, all terms must match
   const terms = query.toLowerCase().split(' ').map(t=>t.trim()).filter(Boolean);
   const filtrados = archivados.filter(c=>{
+    if(fechaDesde || fechaHasta){
+      if(!c.creado_en_raw) return false;
+      const fechaPedido = c.creado_en_raw.slice(0,10); // YYYY-MM-DD
+      if(fechaDesde && fechaPedido < fechaDesde) return false;
+      if(fechaHasta && fechaPedido > fechaHasta) return false;
+    }
     if(!terms.length) return true;
     const haystack = [
       c.cliente, c.ubicacion||'', c.fecha||'', c.creado_en||'',
