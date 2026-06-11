@@ -1368,8 +1368,7 @@ function CampanaNotif({perfil}) {
       </button>
 
       {open && (
-        <div style={{position:'absolute',right:0,top:'100%',width:320,background:'#fff',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.18)',zIndex:300,overflow:'hidden',marginTop:6}}>
-          <div style={{padding:'12px 16px',borderBottom:'0.5px solid #eee',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+ <div className="campana-dropdown" style={{position:'absolute',right:0,top:'100%',width:320,maxWidth:'calc(100vw - 24px)',background:'#fff',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.18)',zIndex:300,overflow:'hidden',marginTop:6}}>          <div style={{padding:'12px 16px',borderBottom:'0.5px solid #eee',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
             <span style={{fontWeight:600,fontSize:14,color:'#1a1a1a'}}>Notificaciones</span>
             <button onClick={()=>setOpen(false)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:18}}>✕</button>
           </div>
