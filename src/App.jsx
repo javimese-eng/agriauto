@@ -27,6 +27,7 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
 
 const LOGO_FULL = "/agriauto_logotipo.jpg";
 const LOGO_ICON = "/hojas.jpg";
+const VAPID_PUBLIC_KEY = "BMYONOYeW2A1emGRX7DHeCAznl8IBJ_w1f4cCSdCfQoI-rprm0Rpwal4w8TEeTZYRwzuTZ65vuj0UpjgPRW-hg0";
 
 // ── Configuración de tableros ────────────────────────────
 const TABLEROS = {
@@ -101,7 +102,46 @@ async function notificarResponsables(pedidoId, tipo, texto, autorId, pedidoClien
     if (should) await crearNotificacion(p.id, tipo, texto, pedidoId);
   }
 }
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
 
+async function activarPushNotifs(usuarioId) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return { ok:false, error:'Tu navegador no soporta notificaciones push.' };
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') {
+    return { ok:false, error:'Permiso de notificaciones denegado.' };
+  }
+  try {
+    const reg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+      });
+    }
+    const json = sub.toJSON();
+    await sb.from('push_subscriptions').upsert({
+      usuario_id: usuarioId,
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth,
+    }, { onConflict: 'endpoint' });
+    return { ok:true };
+  } catch(e) {
+    console.error('Error activando push', e);
+    return { ok:false, error:'No se pudo activar la suscripción.' };
+  }
+}
 // ── Helpers ──────────────────────────────────────────────
 function avColor(str='') {
   const idx = ([...str].reduce((a,c)=>a+c.charCodeAt(0),0)) % AV_PALETTE.length;
@@ -1234,6 +1274,28 @@ function CampanaNotif({perfil}) {
   const [notifs, setNotifs] = useState([]);
   const [open, setOpen] = useState(false);
   const [prefs, setPrefs] = useState(null);
+  const [pushEstado, setPushEstado] = useState('cargando'); // 'soportado' | 'no-soportado' | 'denegado' | 'activo' | 'cargando'
+  const [pushMsg, setPushMsg] = useState('');
+
+  useEffect(()=>{
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      setPushEstado('no-soportado'); return;
+    }
+    if (Notification.permission === 'denied') { setPushEstado('denegado'); return; }
+    navigator.serviceWorker.getRegistration().then(reg=>{
+      if (!reg) { setPushEstado('soportado'); return; }
+      reg.pushManager.getSubscription().then(sub=>{
+        setPushEstado(sub ? 'activo' : 'soportado');
+      });
+    });
+  },[]);
+
+  async function handleActivarPush() {
+    setPushMsg('');
+    const res = await activarPushNotifs(perfil.id);
+    if (res.ok) { setPushEstado('activo'); setPushMsg('¡Notificaciones activadas!'); }
+    else { setPushEstado(Notification.permission==='denied'?'denegado':'soportado'); setPushMsg(res.error); }
+  }
 
   async function cargar() {
     if (!perfil?.id) return;
@@ -1307,7 +1369,25 @@ function CampanaNotif({perfil}) {
             <span style={{fontWeight:600,fontSize:14,color:'#1a1a1a'}}>Notificaciones</span>
             <button onClick={()=>setOpen(false)} style={{background:'none',border:'none',cursor:'pointer',color:'#bbb',fontSize:18}}>✕</button>
           </div>
-
+{/* Activación de notificaciones push */}
+          {pushEstado!=='no-soportado' && (
+            <div style={{padding:'10px 16px',borderBottom:'0.5px solid #eee',background:'#fafafa'}}>
+              {pushEstado==='activo' && (
+                <div style={{fontSize:12,color:'#3a9e3f',fontWeight:600,display:'flex',alignItems:'center',gap:6}}>✅ Notificaciones activadas en este dispositivo</div>
+              )}
+              {pushEstado==='soportado' && (
+                <button onClick={handleActivarPush}
+                  style={{width:'100%',background:'#3a9e3f',color:'#fff',border:'none',borderRadius:8,padding:'8px 12px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
+                  🔔 Activar notificaciones en este dispositivo
+                </button>
+              )}
+              {pushEstado==='denegado' && (
+                <div style={{fontSize:11,color:'#aa6600'}}>⚠️ Notificaciones bloqueadas. Actívalas en los ajustes del navegador para este sitio.</div>
+              )}
+              {pushEstado==='cargando' && <div style={{fontSize:11,color:'#bbb'}}>Comprobando notificaciones…</div>}
+              {pushMsg && <div style={{fontSize:11,color:'#888',marginTop:4}}>{pushMsg}</div>}
+            </div>
+          )}
           {/* Preferencias */}
           {prefs && (
             <div style={{padding:'8px 16px',borderBottom:'0.5px solid #eee',background:'#fafafa'}}>
