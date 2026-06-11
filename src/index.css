@@ -16,8 +16,7 @@ input:focus, textarea:focus { border-color: #3a9e3f !important; box-shadow: 0 0 
   .mobile-col-nav { display: flex !important; }
   .board-grid { display: block !important; padding: 8px !important; }
   .col-item { display: none !important; }
-  .col-item.col-active { display: flex !important; }
+  .col-item.col-active { display: flex !important; height: calc(100vh - var(--header-h) - var(--mobile-nav-h) - var(--nuevo-bar-h) - 16px) !important; }
   .header-title-sub { display: none; }
   .col-header-sticky { position: static !important; top: auto !important; }
-  .cards-scroll { max-height: calc(100vh - var(--header-h) - var(--mobile-nav-h) - var(--nuevo-bar-h) - 41px) !important; }
 }
