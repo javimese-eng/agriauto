@@ -134,6 +134,7 @@ async function cargarPedidosPorTablero(tableroId) {
       urgencia: p.urgencia || 'cuando_pueda',
       urgente: p.urgente || false,
       creado_en: p.creado_en ? new Date(p.creado_en).toLocaleString('es-ES',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}) : '',
+      creado_en_raw: p.creado_en || '',
       notas: p.notas || '',
       productos: (p.productos||[]).map(x=>({id:x.id,nombre:x.nombre,cantidad:x.cantidad||''})),
       responsables: (p.responsables||[]).map(x=>x.nombre),
