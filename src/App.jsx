@@ -1282,6 +1282,9 @@ function CampanaNotif({perfil}) {
   const [pushMsg, setPushMsg] = useState('');
 
   useEffect(()=>{
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (isIOS && !isStandalone) { setPushEstado('ios-no-instalada'); return; }
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
       setPushEstado('no-soportado'); return;
     }
@@ -1386,6 +1389,9 @@ function CampanaNotif({perfil}) {
               )}
               {pushEstado==='denegado' && (
                 <div style={{fontSize:11,color:'#aa6600'}}>⚠️ Notificaciones bloqueadas. Actívalas en los ajustes del navegador para este sitio.</div>
+              )}
+              {pushEstado==='ios-no-instalada' && (
+                <div style={{fontSize:11,color:'#aa6600',lineHeight:1.5}}>📱 Para recibir notificaciones en iPhone, primero añade esta web a tu pantalla de inicio: pulsa <b>Compartir</b> (□↑) y luego <b>"Añadir a pantalla de inicio"</b>. Después abre la app desde ese icono y activa las notificaciones aquí.</div>
               )}
               {pushEstado==='cargando' && <div style={{fontSize:11,color:'#bbb'}}>Comprobando notificaciones…</div>}
               {pushMsg && <div style={{fontSize:11,color:'#888',marginTop:4}}>{pushMsg}</div>}
