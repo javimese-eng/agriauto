@@ -1132,8 +1132,14 @@ useEffect(()=>{
           </div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
-          {perfil && <><CampanaNotif perfil={perfil}/><Avatar name={perfil.nombre} size={28}/><button onClick={onLogout} style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:7,padding:'5px 10px',fontSize:12,color:'#888',cursor:'pointer',fontWeight:500,marginRight:4}}>Salir</button></>}
-          <button onClick={()=>setVistaArchivo(true)}
+{perfil && <><CampanaNotif perfil={perfil} onAbrirPedido={(pedidoId)=>{
+            for (const k of cfg.colKeys) {
+              const found = data[k]?.find(c=>c.id===pedidoId);
+              if (found) { setOpenCard({card:found,colKey:k,esArchivado:false}); return; }
+            }
+            const foundArch = archivados.find(c=>c.id===pedidoId);
+            if (foundArch) setOpenCard({card:foundArch,colKey:'archivados',esArchivado:true});
+          }}/><Avatar name={perfil.nombre} size={28}/><button onClick={onLogout} style={{background:'#f0f0ec',border:'0.5px solid #ddd',borderRadius:7,padding:'5px 10px',fontSize:12,color:'#888',cursor:'pointer',fontWeight:500,marginRight:4}}>Salir</button></>}          <button onClick={()=>setVistaArchivo(true)}
             style={{background:'#f0f0ec',color:'#666',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 13px',fontSize:13,fontWeight:500,cursor:'pointer',display:'flex',alignItems:'center',gap:5}}
             onMouseEnter={e=>e.currentTarget.style.background='#e8e8e4'} onMouseLeave={e=>e.currentTarget.style.background='#f0f0ec'}
           >📦 Archivo {archivados.length>0&&<span style={{background:'#555',color:'#fff',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:600}}>{archivados.length}</span>}</button>
@@ -1283,7 +1289,7 @@ useEffect(()=>{
 
 
 // ── Campana de notificaciones ────────────────────────────
-function CampanaNotif({perfil}) {
+function CampanaNotif({perfil, onAbrirPedido}) {
   const [notifs, setNotifs] = useState([]);
   const [open, setOpen] = useState(false);
   const [prefs, setPrefs] = useState(null);
@@ -1430,7 +1436,10 @@ function CampanaNotif({perfil}) {
           <div style={{maxHeight:280,overflowY:'auto'}}>
             {notifs.length===0 && <div style={{padding:'24px 16px',textAlign:'center',fontSize:12,color:'#bbb'}}>Sin notificaciones</div>}
             {notifs.map(n=>(
-              <div key={n.id} style={{padding:'10px 16px',borderBottom:'0.5px solid #f0f0f0',background:n.leida?'#fff':'#f5faf5',display:'flex',gap:10,alignItems:'flex-start'}}>
+              <div key={n.id} onClick={()=>{ if(n.pedido_id){ onAbrirPedido(n.pedido_id); setOpen(false); } }}
+                style={{padding:'10px 16px',borderBottom:'0.5px solid #f0f0f0',background:n.leida?'#fff':'#f5faf5',display:'flex',gap:10,alignItems:'flex-start',cursor:n.pedido_id?'pointer':'default'}}
+                onMouseEnter={e=>{if(n.pedido_id)e.currentTarget.style.background='#eef6ee';}}
+                onMouseLeave={e=>{e.currentTarget.style.background=n.leida?'#fff':'#f5faf5';}}>
                 <span style={{fontSize:16,flexShrink:0,marginTop:1}}>{iconos[n.tipo]||'🔔'}</span>
                 <div style={{flex:1}}>
                   <div style={{fontSize:12,color:'#1a1a1a',lineHeight:1.4}}>{n.texto}</div>
