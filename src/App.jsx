@@ -1664,6 +1664,23 @@ function App() {
   const [perfil,setPerfil]=useState(null);
   const [checkingAuth,setCheckingAuth]=useState(true);
   const [tablero,setTablero]=useState(null);
+  const [pedidoDestino,setPedidoDestino]=useState(null);
+
+  useEffect(()=>{
+    const params = new URLSearchParams(window.location.search);
+    const pedidoId = params.get('pedido');
+    if (pedidoId) {
+      setPedidoDestino(pedidoId);
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  },[]);
+
+  useEffect(()=>{
+    if (!pedidoDestino || !perfil) return;
+    sb.from('pedidos').select('id,tablero').eq('id',pedidoDestino).single().then(({data})=>{
+      if (data?.tablero) setTablero(data.tablero);
+    });
+  },[pedidoDestino,perfil]);
 
   useEffect(()=>{
     sb.auth.getSession().then(async ({data:{session}})=>{
