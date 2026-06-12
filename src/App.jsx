@@ -1733,7 +1733,7 @@ function App() {
   if(checkingAuth) return <Spinner msg="Cargando…"/>;
   if(!usuario) return <PantallaAuth onLogin={(u,p)=>{setUsuario(u);setPerfil(p);}}/>;
   if(!tablero) return <Inicio onSelect={setTablero} perfil={perfil} onLogout={handleLogout}/>;
-  return <Tablero tableroId={tablero} onVolver={()=>setTablero(null)} perfil={perfil} onLogout={handleLogout}/>;
+  return <Tablero tableroId={tablero} onVolver={()=>setTablero(null)} perfil={perfil} onLogout={handleLogout} pedidoDestino={pedidoDestino} onPedidoDestinoUsado={()=>setPedidoDestino(null)}/>;
 }
 
 
