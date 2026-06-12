@@ -906,6 +906,7 @@ function Tablero({tableroId,onVolver,perfil,onLogout,pedidoDestino,onPedidoDesti
   const [toast,setToast]=useState(null);
   const dragRef=useRef(null);
   const [colActiva, setColActiva] = useState(0);
+  const touchStartRef = useRef(null);
   const [usuariosApp, setUsuariosApp] = useState([]);
   const [moveMenu, setMoveMenu] = useState(null); // {card, colKey, position}
   const [gruposApp, setGruposApp] = useState([]);
@@ -1182,7 +1183,22 @@ useEffect(()=>{
       </div>
 
       {/* ── TABLERO ── */}
-      <div className="board-grid" style={{display:'grid',gridTemplateColumns:`repeat(${cfg.colKeys.length},1fr)`,gap:10,padding:10,width:'100%',boxSizing:'border-box',overflowX:'hidden'}}>
+      <div className="board-grid"
+        onTouchStart={e=>{
+          touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        }}
+        onTouchEnd={e=>{
+          const start = touchStartRef.current;
+          if(!start) return;
+          const dx = e.changedTouches[0].clientX - start.x;
+          const dy = e.changedTouches[0].clientY - start.y;
+          touchStartRef.current = null;
+          if(Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5){
+            if(dx < 0) setColActiva(i=>Math.min(cfg.colKeys.length-1,i+1));
+            else setColActiva(i=>Math.max(0,i-1));
+          }
+        }}
+        style={{display:'grid',gridTemplateColumns:`repeat(${cfg.colKeys.length},1fr)`,gap:10,padding:10,width:'100%',boxSizing:'border-box',overflowX:'hidden'}}>
         {cfg.colKeys.map((colKey,idx)=>{
           const col=cfg.columnas[colKey];
           return (
