@@ -895,7 +895,7 @@ function Archivo({archivados,onBack,onOpenCard,headerColor='#3a9e3f'}) {
 }
 
 // ── Tablero ──────────────────────────────────────────────
-function Tablero({tableroId,onVolver,perfil,onLogout}) {
+function Tablero({tableroId,onVolver,perfil,onLogout,pedidoDestino,onPedidoDestinoUsado}) {
   const cfg = TABLEROS[tableroId];
   const [data,setData]=useState(Object.fromEntries(cfg.colKeys.map(k=>[k,[]])));
   const [archivados,setArchivados]=useState([]);
@@ -940,7 +940,16 @@ function Tablero({tableroId,onVolver,perfil,onLogout}) {
   }
 
   useEffect(()=>{cargar();},[]);
-
+useEffect(()=>{
+    if (!pedidoDestino || loading) return;
+    for (const k of cfg.colKeys) {
+      const found = data[k]?.find(c=>c.id===pedidoDestino);
+      if (found) { setOpenCard({card:found,colKey:k,esArchivado:false}); onPedidoDestinoUsado(); return; }
+    }
+    const foundArch = archivados.find(c=>c.id===pedidoDestino);
+    if (foundArch) { setOpenCard({card:foundArch,colKey:'archivados',esArchivado:true}); onPedidoDestinoUsado(); return; }
+    onPedidoDestinoUsado();
+  },[pedidoDestino,loading,data,archivados]);
   useEffect(()=>{
     let ch = null;
     let reconnectTimer = null;
