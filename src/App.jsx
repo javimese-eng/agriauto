@@ -1656,7 +1656,7 @@ function PantallaAuth({onLogin}) {
     setLoading(false);
   }
 
-  async function handleRegistro(e){
+   async function handleRegistro(e){
     e.preventDefault();
     if(!nombre.trim()){setError('El nombre es obligatorio.');return;}
     setError(''); setLoading(true);
@@ -1664,13 +1664,9 @@ function PantallaAuth({onLogin}) {
     if(error){setError(error.message);setLoading(false);return;}
     if(data.user){
       await sb.from('perfiles').insert({id:data.user.id,nombre:nombre.trim(),email,es_admin:false,activo:true,aprobado:false});
-        if(data.session){
-        const {data:p}=await sb.from('perfiles').select('*').eq('id',data.user.id).single();
-        onLogin(data.user,p);
-      } else {
-        setMsg('Cuenta creada. Revisa tu email para confirmar y luego inicia sesión.');
-        setModo('login'); setPassword('');
-      }
+      await sb.auth.signOut();
+      setMsg('Solicitud enviada. El administrador revisará tu cuenta y te avisará cuando esté aprobada.');
+      setModo('login'); setPassword('');
     }
     setLoading(false);
   }
