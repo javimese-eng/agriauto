@@ -1302,69 +1302,6 @@ useEffect(()=>{
     </div>
   );
 }
-function PanelAdmin({perfil}) {
-  const [pendientes,setPendientes]=useState([]);
-  const [open,setOpen]=useState(false);
-
-  useEffect(()=>{
-    if(!perfil?.es_admin) return;
-    cargarPendientes();
-    const ch = sb.channel('admin-pendientes')
-      .on('postgres_changes',{event:'INSERT',schema:'public',table:'perfiles'},()=>cargarPendientes())
-      .subscribe();
-    return ()=>{ sb.removeChannel(ch); };
-  },[perfil]);
-
-  async function cargarPendientes(){
-    const {data}=await sb.from('perfiles').select('*').eq('aprobado',false).eq('activo',true).order('created_at',{ascending:false});
-    setPendientes(data||[]);
-  }
-
-  async function aprobar(id){
-    await sb.from('perfiles').update({aprobado:true}).eq('id',id);
-    cargarPendientes();
-  }
-
-  async function rechazar(id){
-    await sb.from('perfiles').update({activo:false}).eq('id',id);
-    await sb.auth.admin?.deleteUser(id).catch(()=>{});
-    cargarPendientes();
-  }
-
-  if(!perfil?.es_admin) return null;
-
-  return (
-    <div style={{position:'relative'}}>
-      <button onClick={()=>setOpen(o=>!o)}
-        style={{background:pendientes.length?'#e05c3a':'#f0f0ec',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:600,cursor:'pointer',color:pendientes.length?'#fff':'#888',display:'flex',alignItems:'center',gap:6,position:'relative'}}>
-        👥 Solicitudes {pendientes.length>0&&<span style={{background:'#fff',color:'#e05c3a',borderRadius:99,padding:'1px 6px',fontSize:11,fontWeight:700}}>{pendientes.length}</span>}
-      </button>
-      {open && (
-        <div style={{position:'absolute',right:0,top:'100%',width:320,maxWidth:'calc(100vw - 24px)',background:'#fff',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.18)',zIndex:300,overflow:'hidden',marginTop:6}}>
-          <div style={{padding:'12px 16px',borderBottom:'0.5px solid #eee',fontWeight:600,fontSize:13}}>Solicitudes pendientes</div>
-          {pendientes.length===0 && <div style={{padding:'24px 16px',textAlign:'center',color:'#bbb',fontSize:13}}>Sin solicitudes pendientes</div>}
-          {pendientes.map(p=>(
-            <div key={p.id} style={{padding:'12px 16px',borderBottom:'0.5px solid #f0f0f0',display:'flex',alignItems:'center',gap:10}}>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:600,fontSize:13}}>{p.nombre}</div>
-                <div style={{fontSize:11,color:'#999'}}>{p.email}</div>
-              </div>
-              <button onClick={()=>aprobar(p.id)}
-                style={{background:'#3a9e3f',color:'#fff',border:'none',borderRadius:7,padding:'6px 12px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
-                ✓ Aprobar
-              </button>
-              <button onClick={()=>rechazar(p.id)}
-                style={{background:'#f0f0ec',color:'#e05c3a',border:'0.5px solid #e05c3a',borderRadius:7,padding:'6px 10px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 
 // ── Campana de notificaciones ────────────────────────────
 function CampanaNotif({perfil, onAbrirPedido}) {
@@ -1535,7 +1472,8 @@ function CampanaNotif({perfil, onAbrirPedido}) {
 
 // ── Panel de Administración ──────────────────────────────
 function PanelAdmin({perfil, onCerrar}) {
-  const [tab, setTab] = useState('usuarios'); // 'usuarios' | 'grupos'
+  const [tab, setTab] = useState('solicitudes'); // 'solicitudes' | 'usuarios' | 'grupos'
+  const [pendientes, setPendientes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1572,14 +1510,27 @@ function PanelAdmin({perfil, onCerrar}) {
     showToast(!u.es_admin?`${u.nombre} ahora es admin`:`${u.nombre} ya no es admin`);
     cargar();
   }
+          async function cargarPendientes(){
+    const {data}=await sb.from('perfiles').select('*').eq('aprobado',false).eq('activo',true);
+    setPendientes(data||[]);
+  }
+  async function aprobar(u){
+    await sb.from('perfiles').update({aprobado:true}).eq('id',u.id);
+    showToast(`${u.nombre} aprobado ✓`); cargar(); cargarPendientes();
+  }
+  async function rechazar(u){
+    await sb.from('perfiles').update({activo:false}).eq('id',u.id);
+    showToast(`${u.nombre} rechazado`); cargar(); cargarPendientes();
+  }
+  async function toggleActivo(u){
   async function toggleActivo(u){
     if(u.activo!==false && !confirm(`¿Desactivar a ${u.nombre}?`)) return;
     await sb.from('perfiles').update({activo:u.activo===false?true:false}).eq('id',u.id);
     showToast(u.activo===false?`${u.nombre} reactivado`:`${u.nombre} desactivado`);
     cargar();
   }
-  useEffect(()=>{cargar();},[]);
-  return (
+  useEffect(()=>{ cargar(); cargarPendientes(); },[]);
+        return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 16px',zIndex:200,overflowY:'auto'}} onClick={e=>{if(e.target===e.currentTarget)onCerrar()}}>
       <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:500,marginTop:20,overflow:'hidden',boxShadow:'0 20px 60px rgba(0,0,0,0.28)'}}>
         <div style={{background:'#3a9e3f',padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -1587,17 +1538,33 @@ function PanelAdmin({perfil, onCerrar}) {
           <button onClick={onCerrar} style={{background:'none',border:'none',color:'rgba(255,255,255,0.8)',fontSize:20,cursor:'pointer'}}>✕</button>
         </div>
         <div style={{display:'flex',borderBottom:'0.5px solid #eee'}}>
-          {['usuarios','grupos'].map(t=>(
+                    {['solicitudes','usuarios','grupos'].map(t=>(
             <button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'10px',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
               background:tab===t?'#fff':'#f5f5f3',color:tab===t?'#3a9e3f':'#aaa',
-              borderBottom:tab===t?'2px solid #3a9e3f':'2px solid transparent'}}>
-              {t==='usuarios'?'👥 Usuarios':'🏷️ Grupos'}
+              borderBottom:tab===t?'2px solid #3a9e3f':'2px solid transparent',position:'relative'}}>
+              {t==='solicitudes'&&<>🔔 Solicitudes{pendientes.length>0&&<span style={{position:'absolute',top:6,right:6,background:'#e05c3a',color:'#fff',borderRadius:99,fontSize:10,fontWeight:700,padding:'0 5px',lineHeight:'16px'}}>{pendientes.length}</span>}</>}
+              {t==='usuarios'&&'👥 Usuarios'}
+              {t==='grupos'&&'🏷️ Grupos'}
             </button>
           ))}
         </div>
         <div style={{padding:'16px 18px'}}>
-          {loading?<div style={{textAlign:'center',padding:30,color:'#bbb'}}>Cargando…</div>:tab==='usuarios'?(
+          {loading?<div style={{textAlign:'center',padding:30,color:'#bbb'}}>Cargando…</div>:tab==='solicitudes'?(
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {pendientes.length===0&&<div style={{textAlign:'center',padding:30,color:'#bbb',fontSize:13}}>Sin solicitudes pendientes</div>}
+              {pendientes.map(u=>(
+                <div key={u.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',border:'0.5px solid #e8e8e4',borderRadius:10}}>
+                  <Avatar name={u.nombre} size={36}/>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:13,fontWeight:600}}>{u.nombre}</div>
+                    <div style={{fontSize:11,color:'#aaa'}}>{u.email}</div>
+                  </div>
+                  <button onClick={()=>aprobar(u)} style={{background:'#3a9e3f',color:'#fff',border:'none',borderRadius:7,padding:'6px 12px',fontSize:12,fontWeight:600,cursor:'pointer'}}>✓ Aprobar</button>
+                  <button onClick={()=>rechazar(u)} style={{background:'#fdecea',color:'#c0392b',border:'0.5px solid #f5c0bc',borderRadius:7,padding:'6px 10px',fontSize:12,fontWeight:600,cursor:'pointer'}}>✕</button>
+                </div>
+              ))}
+            </div>
+          ):tab==='usuarios'?(            <div style={{display:'flex',flexDirection:'column',gap:8}}>
               {usuarios.map(u=>(
                 <div key={u.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:u.activo===false?'#fafafa':'#fff',border:'0.5px solid',borderColor:u.activo===false?'#eee':'#e8e8e4',borderRadius:10,opacity:u.activo===false?0.6:1}}>
                   <Avatar name={u.nombre} size={36}/>
