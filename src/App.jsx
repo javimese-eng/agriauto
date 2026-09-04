@@ -1472,7 +1472,7 @@ function CampanaNotif({perfil, onAbrirPedido}) {
 
 // ── Panel de Administración ──────────────────────────────
 function PanelAdmin({perfil, onCerrar}) {
-  const [tab, setTab] = useState('solicitudes'); // 'solicitudes' | 'usuarios' | 'grupos'
+  const [tab, setTab] = useState('solicitudes');
   const [pendientes, setPendientes] = useState([]);
   const [usuarios, setUsuarios] = useState([]);
   const [grupos, setGrupos] = useState([]);
@@ -1486,6 +1486,18 @@ function PanelAdmin({perfil, onCerrar}) {
       sb.from('grupos').select('*,miembros:grupos_usuarios(perfil_id,perfiles(nombre))').order('nombre'),
     ]);
     setUsuarios(u||[]); setGrupos(g||[]); setLoading(false);
+  }
+  async function cargarPendientes(){
+    const {data}=await sb.from('perfiles').select('*').eq('aprobado',false).eq('activo',true);
+    setPendientes(data||[]);
+  }
+  async function aprobar(u){
+    await sb.from('perfiles').update({aprobado:true}).eq('id',u.id);
+    showToast(`${u.nombre} aprobado ✓`); cargar(); cargarPendientes();
+  }
+  async function rechazar(u){
+    await sb.from('perfiles').update({activo:false}).eq('id',u.id);
+    showToast(`${u.nombre} rechazado`); cargar(); cargarPendientes();
   }
   async function crearGrupo(){
     if(!nuevoGrupo.trim()) return;
@@ -1510,19 +1522,6 @@ function PanelAdmin({perfil, onCerrar}) {
     showToast(!u.es_admin?`${u.nombre} ahora es admin`:`${u.nombre} ya no es admin`);
     cargar();
   }
-          async function cargarPendientes(){
-    const {data}=await sb.from('perfiles').select('*').eq('aprobado',false).eq('activo',true);
-    setPendientes(data||[]);
-  }
-  async function aprobar(u){
-    await sb.from('perfiles').update({aprobado:true}).eq('id',u.id);
-    showToast(`${u.nombre} aprobado ✓`); cargar(); cargarPendientes();
-  }
-  async function rechazar(u){
-    await sb.from('perfiles').update({activo:false}).eq('id',u.id);
-    showToast(`${u.nombre} rechazado`); cargar(); cargarPendientes();
-  }
-  async function toggleActivo(u){
   async function toggleActivo(u){
     if(u.activo!==false && !confirm(`¿Desactivar a ${u.nombre}?`)) return;
     await sb.from('perfiles').update({activo:u.activo===false?true:false}).eq('id',u.id);
@@ -1530,7 +1529,7 @@ function PanelAdmin({perfil, onCerrar}) {
     cargar();
   }
   useEffect(()=>{ cargar(); cargarPendientes(); },[]);
-        return (
+  return (
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'20px 16px',zIndex:200,overflowY:'auto'}} onClick={e=>{if(e.target===e.currentTarget)onCerrar()}}>
       <div style={{background:'#fff',borderRadius:14,width:'100%',maxWidth:500,marginTop:20,overflow:'hidden',boxShadow:'0 20px 60px rgba(0,0,0,0.28)'}}>
         <div style={{background:'#3a9e3f',padding:'14px 18px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -1538,7 +1537,7 @@ function PanelAdmin({perfil, onCerrar}) {
           <button onClick={onCerrar} style={{background:'none',border:'none',color:'rgba(255,255,255,0.8)',fontSize:20,cursor:'pointer'}}>✕</button>
         </div>
         <div style={{display:'flex',borderBottom:'0.5px solid #eee'}}>
-                    {['solicitudes','usuarios','grupos'].map(t=>(
+          {['solicitudes','usuarios','grupos'].map(t=>(
             <button key={t} onClick={()=>setTab(t)} style={{flex:1,padding:'10px',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
               background:tab===t?'#fff':'#f5f5f3',color:tab===t?'#3a9e3f':'#aaa',
               borderBottom:tab===t?'2px solid #3a9e3f':'2px solid transparent',position:'relative'}}>
@@ -1564,7 +1563,8 @@ function PanelAdmin({perfil, onCerrar}) {
                 </div>
               ))}
             </div>
-          ):tab==='usuarios'?(            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          ):tab==='usuarios'?(
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
               {usuarios.map(u=>(
                 <div key={u.id} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:u.activo===false?'#fafafa':'#fff',border:'0.5px solid',borderColor:u.activo===false?'#eee':'#e8e8e4',borderRadius:10,opacity:u.activo===false?0.6:1}}>
                   <Avatar name={u.nombre} size={36}/>
@@ -1589,7 +1589,7 @@ function PanelAdmin({perfil, onCerrar}) {
                 </div>
               ))}
             </div>
-          ):( /* tab grupos */
+          ):(
             <div style={{display:'flex',flexDirection:'column',gap:12}}>
               <div style={{display:'flex',gap:8}}>
                 <input value={nuevoGrupo} onChange={e=>setNuevoGrupo(e.target.value)}
