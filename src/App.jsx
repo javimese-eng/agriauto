@@ -1133,6 +1133,7 @@ useEffect(()=>{
           </div>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
+        {perfil?.es_admin && <PanelAdmin perfil={perfil}/>}
 {perfil && <><CampanaNotif perfil={perfil} onAbrirPedido={(pedidoId)=>{
             for (const k of cfg.colKeys) {
               const found = data[k]?.find(c=>c.id===pedidoId);
@@ -1301,7 +1302,68 @@ useEffect(()=>{
     </div>
   );
 }
+function PanelAdmin({perfil}) {
+  const [pendientes,setPendientes]=useState([]);
+  const [open,setOpen]=useState(false);
 
+  useEffect(()=>{
+    if(!perfil?.es_admin) return;
+    cargarPendientes();
+    const ch = sb.channel('admin-pendientes')
+      .on('postgres_changes',{event:'INSERT',schema:'public',table:'perfiles'},()=>cargarPendientes())
+      .subscribe();
+    return ()=>{ sb.removeChannel(ch); };
+  },[perfil]);
+
+  async function cargarPendientes(){
+    const {data}=await sb.from('perfiles').select('*').eq('aprobado',false).eq('activo',true).order('created_at',{ascending:false});
+    setPendientes(data||[]);
+  }
+
+  async function aprobar(id){
+    await sb.from('perfiles').update({aprobado:true}).eq('id',id);
+    cargarPendientes();
+  }
+
+  async function rechazar(id){
+    await sb.from('perfiles').update({activo:false}).eq('id',id);
+    await sb.auth.admin?.deleteUser(id).catch(()=>{});
+    cargarPendientes();
+  }
+
+  if(!perfil?.es_admin) return null;
+
+  return (
+    <div style={{position:'relative'}}>
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{background:pendientes.length?'#e05c3a':'#f0f0ec',border:'0.5px solid #ddd',borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:600,cursor:'pointer',color:pendientes.length?'#fff':'#888',display:'flex',alignItems:'center',gap:6,position:'relative'}}>
+        👥 Solicitudes {pendientes.length>0&&<span style={{background:'#fff',color:'#e05c3a',borderRadius:99,padding:'1px 6px',fontSize:11,fontWeight:700}}>{pendientes.length}</span>}
+      </button>
+      {open && (
+        <div style={{position:'absolute',right:0,top:'100%',width:320,maxWidth:'calc(100vw - 24px)',background:'#fff',borderRadius:12,boxShadow:'0 8px 32px rgba(0,0,0,0.18)',zIndex:300,overflow:'hidden',marginTop:6}}>
+          <div style={{padding:'12px 16px',borderBottom:'0.5px solid #eee',fontWeight:600,fontSize:13}}>Solicitudes pendientes</div>
+          {pendientes.length===0 && <div style={{padding:'24px 16px',textAlign:'center',color:'#bbb',fontSize:13}}>Sin solicitudes pendientes</div>}
+          {pendientes.map(p=>(
+            <div key={p.id} style={{padding:'12px 16px',borderBottom:'0.5px solid #f0f0f0',display:'flex',alignItems:'center',gap:10}}>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:600,fontSize:13}}>{p.nombre}</div>
+                <div style={{fontSize:11,color:'#999'}}>{p.email}</div>
+              </div>
+              <button onClick={()=>aprobar(p.id)}
+                style={{background:'#3a9e3f',color:'#fff',border:'none',borderRadius:7,padding:'6px 12px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
+                ✓ Aprobar
+              </button>
+              <button onClick={()=>rechazar(p.id)}
+                style={{background:'#f0f0ec',color:'#e05c3a',border:'0.5px solid #e05c3a',borderRadius:7,padding:'6px 10px',fontSize:12,fontWeight:600,cursor:'pointer'}}>
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 
 // ── Campana de notificaciones ────────────────────────────
@@ -1622,7 +1684,8 @@ function PantallaAuth({onLogin}) {
     if(error){setError('Email o contraseña incorrectos.');setLoading(false);return;}
     const {data:p}=await sb.from('perfiles').select('*').eq('id',data.user.id).single();
     if(p?.activo===false){await sb.auth.signOut();setError('Tu cuenta ha sido desactivada. Contacta con el administrador.');setLoading(false);return;}
-    onLogin(data.user,p);
+    if(p?.aprobado===false){await sb.auth.signOut();setError('Tu solicitud está pendiente de aprobación. El administrador te avisará cuando esté lista.');setLoading(false);return;}
+    onLogin(data.user,p);    onLogin(data.user,p);
     setLoading(false);
   }
 
@@ -1633,8 +1696,8 @@ function PantallaAuth({onLogin}) {
     const {data,error}=await sb.auth.signUp({email,password});
     if(error){setError(error.message);setLoading(false);return;}
     if(data.user){
-      await sb.from('perfiles').insert({id:data.user.id,nombre:nombre.trim(),email,es_admin:false,activo:true});
-      if(data.session){
+      await sb.from('perfiles').insert({id:data.user.id,nombre:nombre.trim(),email,es_admin:false,activo:true,aprobado:false});
+        if(data.session){
         const {data:p}=await sb.from('perfiles').select('*').eq('id',data.user.id).single();
         onLogin(data.user,p);
       } else {
